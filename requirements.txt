@@ -1,0 +1,49 @@
+# web + app
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9
+jinja2>=3.1
+pydantic>=2.7
+pydantic-settings>=2.2
+python-dotenv>=1.0       # load .env into os.environ (provider keys + CANDISIFT_ settings)
+sqlmodel>=0.0.24
+# libSQL (Turso) driver — default DB is sqlite+libsql:///ats.db (a drop-in SQLite
+# replacement). Pulls libsql-experimental. Point CANDISIFT_DB_URL at a Turso cloud DB to
+# go remote; plain sqlite:///… still works without this package.
+sqlalchemy-libsql>=0.2
+
+# agents on Claude
+agno>=2.6.17
+anthropic>=0.40
+
+# optional LLM providers (install only the ones you use; Agno raises a clear error
+# if a configured model's SDK is missing). openai covers ALL OpenAI-compatible
+# endpoints too (DeepInfra/Together/OpenRouter/vLLM/LM Studio via OPENAI_BASE_URL).
+# openai>=1.0       # gpt-* and openai/<id> custom endpoints
+# ollama>=0.3       # local models: ollama/<id>
+
+# pricing (embedded offline dataset)
+genai-prices>=0.0.1
+
+# semantic ranking (optional — local embeddings for skill/terminology matching).
+# Heavy (pulls torch); the ranker falls back to lexical cosine if it's absent, so
+# the app and tests run fine without it. Install to enable semantic pre-ranking.
+sentence-transformers>=2.2
+
+# resume parsing (optional — only for real PDF/DOCX; .txt/.md work without these)
+pdfplumber>=0.11
+python-docx>=1.1
+
+# OCR for scanned PDFs / image resumes (optional). Also needs system binaries:
+#   macOS:  brew install tesseract poppler
+#   Debian: apt-get install tesseract-ocr poppler-utils
+pytesseract>=0.3.10
+pdf2image>=1.17
+pillow>=10.0
+
+# tests
+pytest>=8
+httpx>=0.27
+
+# pdf to markdown
+pymupdf4llm>=0.0.17

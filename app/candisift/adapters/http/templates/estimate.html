@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Cost estimate{% endblock %}
+{% block content %}
+<div class="pagehead">
+  <div>
+    <h1>Cost estimate</h1>
+    <p>{{ job.title }} · {{ estimate.n_resumes }} resume(s) staged — nothing runs until you confirm.</p>
+  </div>
+</div>
+<div class="card">
+  <h1>Estimated cost <span class="mut">{{ estimate.n_resumes }} resume(s)</span></h1>
+  <table>
+    <tr><th>Per resume (upper bound)</th><td class="right">${{ '%.4f'|format(estimate.per_resume_usd) }}</td></tr>
+    <tr><th>Estimated total</th><td class="right"><strong>${{ '%.2f'|format(estimate.estimated_total_usd) }}</strong></td></tr>
+    <tr><th>Persona model</th><td class="right">{{ estimate.persona_model }}</td></tr>
+    <tr><th>Synthesis model</th><td class="right">{{ estimate.synth_model }}</td></tr>
+    <tr><th>Price source</th><td class="right">{{ estimate.price_source }}</td></tr>
+  </table>
+  <p class="mut">{{ estimate.note }} Hard filters drop many candidates before the LLM stage, so real spend is typically well below this.</p>
+
+  <div class="metarow" style="margin-top:4px">
+    <form method="post" action="/jobs/{{ job.id }}/confirm">
+      <input type="hidden" name="task_ids" value="{{ task_ids|join(',') }}">
+      <button type="submit" class="good">Confirm &amp; process {{ estimate.n_resumes }} resume(s)</button>
+    </form>
+    <a class="btn secondary" href="/jobs/{{ job.id }}">Cancel</a>
+  </div>
+  <p class="mut">Cancelling leaves the batch staged (not processed); it will not run until confirmed.</p>
+</div>
+{% endblock %}

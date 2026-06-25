@@ -1,0 +1,390 @@
+{% extends "base.html" %}
+{% block title %}{{ (cand.profile.name if cand and cand.profile and cand.profile.name else 'Candidate') }} — breakdown{% endblock %}
+
+{# colour band: high-is-good unless mode='low' (risk) #}
+{% macro band(val, mode='high') %}{% if mode=='low' %}{{ 'var(--ok)' if val<=30 else ('var(--warn)' if val<=60 else 'var(--bad)') }}{% else %}{{ 'var(--ok)' if val>=70 else ('var(--warn)' if val>=40 else 'var(--bad)') }}{% endif %}{% endmacro %}
+
+{# score bar with a role-threshold marker: fill colour-banded, the tick shows the
+   bar the candidate must clear, ✓/✗ = pass/fail against it. #}
+{% macro scorebar(label, val, thresh, mode='high', suffix='') %}
+{% set ok = (val<=thresh) if mode=='low' else (val>=thresh) %}
+<div class="bar2">
+  <span class="name">{{ label }}</span>
+  <span class="track">
+    <span class="fill" style="width:{{ val }}%;background:{{ band(val, mode)|trim }}"></span>
+    <span class="mark" style="left:{{ thresh }}%" title="role bar: {{ thresh }}{{ suffix }}"></span>
+  </span>
+  <span class="amt">{{ val }}{{ suffix }} <span class="{{ 'pass' if ok else 'fail' }}">{{ '✓' if ok else '✗' }}</span></span>
+</div>
+{% endmacro %}
+
+{% block content %}
+{% set p = cand.profile if cand else None %}
+{% set fit = r.synthesis.overall_fit if r.synthesis else 0 %}
+
+{# verdict word: recommendation drives it; a hard-filter overrides to PASS. #}
+{% set rec = r.synthesis.recommendation.value if r.synthesis else none %}
+{% set vmap = {'shortlist':['STRONG FIT','ok'],'maybe':['WORTH A LOOK','warn'],'reject':['LIKELY PASS','bad']} %}
+{% set v = vmap.get(rec, ['NEEDS REVIEW','warn']) %}
+{% if not r.passed_hard_filters %}{% set v = ['FILTERED OUT','bad'] %}{% endif %}
+
+{# ---------- ZONE A · DECIDE: verdict, dealbreakers, the one-breath summary ---------- #}
+<div class="card hero">
+  <div class="ring" style="--p:{{ fit }};--rc:{{ band(fit)|trim }}">
+    <div class="hole"><div><div class="ringv">{{ fit }}</div><div class="ringl">fit / 100</div></div></div>
+  </div>
+  <div class="herobody">
+    <div class="verdict-word {{ v[1] }}">{{ v[0] }}</div>
+    <h1 class="subname">{{ p.name if p and p.name else (cand.source_filename if cand else r.candidate_id[:8]) }}</h1>
+    <div class="metarow">
+      <span class="pill {{ r.decision.value }}">decision: {{ r.decision.value }}</span>
+      {% if p %}
+        <span class="mut">{{ p.titles|join(', ') or '—' }} · {{ p.total_years }}y · auth {{ p.work_authorization or '—' }}</span>
+        {% if p.github_url or p.linkedin_url or p.portfolio_url %}
+          <span style="margin-left:6px;">
+            {% if p.linkedin_url %}<a href="{{ p.linkedin_url }}" target="_blank" style="margin-right:8px; font-weight:500;">🔗 LinkedIn</a>{% endif %}
+            {% if p.github_url %}<a href="{{ p.github_url }}" target="_blank" style="margin-right:8px; font-weight:500;">💻 GitHub</a>{% endif %}
+            {% if p.portfolio_url %}<a href="{{ p.portfolio_url }}" target="_blank" style="font-weight:500;">🌐 Portfolio</a>{% endif %}
+          </span>
+        {% endif %}
+      {% endif %}
+    </div>
+
+    {# dealbreaker banner: one line, all the reasons not to proceed pulled up here #}
+    {% set has_flags = (not r.passed_hard_filters) or (r.tech and r.tech.missing_must_haves) or r.bias_flags or r.requires_human_review or (cand and cand.near_duplicate_of) %}
+    {% if has_flags %}
+    <div class="flag-banner">
+      <span class="lead">⚠ watch</span>
+      {% if not r.passed_hard_filters %}<span>hard-filtered</span>{% endif %}
+      {% if r.tech and r.tech.missing_must_haves %}<span>missing: <b>{{ r.tech.missing_must_haves|join(', ') }}</b></span>{% endif %}
+      {% if r.requires_human_review %}<span>human review required</span>{% endif %}
+      {% if r.bias_flags %}<span>{{ r.bias_flags|length }} bias flag{{ 's' if r.bias_flags|length != 1 }}</span>{% endif %}
+      {% if cand and cand.near_duplicate_of %}<span>near-duplicate {{ '%.0f'|format(cand.duplicate_similarity*100) }}%</span>{% endif %}
+    </div>
+    {% endif %}
+
+    {# TL;DR — the one-breath case, top 2 strengths + top weakness #}
+    {% if r.synthesis and (r.synthesis.strengths or r.synthesis.weaknesses) %}
+    <ul class="tldr">
+      {% for f in r.synthesis.strengths[:2] %}<li><span class="gd">✓</span><span>{{ f.claim }}</span></li>{% endfor %}
+      {% for f in r.synthesis.weaknesses[:1] %}<li><span class="bd">✗</span><span>{{ f.claim }}</span></li>{% endfor %}
+    </ul>
+    {% endif %}
+
+    {# score bars with role threshold markers (high-is-good except risk).
+       ponytail: thresholds are fixed score-band heuristics; wire to per-role
+       thresholds on JDSpec if recruiters want role-tuned bars. #}
+    <div style="margin-top:16px;">
+      {% if r.tech %}{{ scorebar('Technical depth', r.tech.depth_score, 60) }}{% endif %}
+      {% if r.hr %}{{ scorebar('People fit', r.hr.people_score, 50) }}{% endif %}
+      {% if r.risk %}{{ scorebar('Risk', r.risk.risk_score, 40, 'low') }}{% endif %}
+      {{ scorebar('Semantic match', (r.semantic_score*100)|round(0)|int, 50, 'high', '%') }}
+      {% if readability %}{{ scorebar('ATS readability', readability.score, 60) }}{% endif %}
+    </div>
+  </div>
+  <div class="actions">
+    <form method="post" action="/results/{{ r.id }}/decision">
+      <input type="hidden" name="decision" value="accepted"><button class="good">✓ Accept</button></form>
+    <form method="post" action="/results/{{ r.id }}/decision">
+      <input type="hidden" name="decision" value="rejected"><button class="bad">✗ Reject</button></form>
+    <a class="btn secondary" href="/jobs/{{ r.job_id }}">← back to role</a>
+  </div>
+</div>
+
+{# ---------- ZONE B · JUSTIFY: full reasons behind the verdict ---------- #}
+
+{% if cand and cand.near_duplicate_of %}
+<div class="card callout">
+  <h1>⚠ Near-duplicate resume</h1>
+  <p class="mut">{{ '%.0f'|format(cand.duplicate_similarity*100) }}% content match to candidate
+     <code>{{ cand.near_duplicate_of[:8] }}</code> — possible resume farming / re-skinned CV. Review manually.</p>
+</div>
+{% endif %}
+
+{% if not r.passed_hard_filters %}
+<div class="card callout">
+  <h1>Hard-filtered out</h1>
+  <ul class="siglist bad">{% for reason in r.filter_reasons %}<li class="claim">{{ reason }}</li>{% endfor %}</ul>
+  <p class="mut">Rejected by deterministic rules before any LLM cost.</p>
+</div>
+{% endif %}
+
+{% if r.bias_flags %}
+<div class="card callout">
+  <h1>⚠ Bias review</h1>
+  <p class="mut">The verdict's wording referenced potential protected-class proxies — surfaced for
+     human review, never acted on automatically: {% for t in r.bias_flags %}<code>{{ t }}</code> {% endfor %}</p>
+</div>
+{% endif %}
+
+{% if r.requires_human_review %}
+<div class="card callout">
+  <h1>⚑ Human review required</h1>
+  <p class="mut">Automated guardrails held this verdict back from any clean auto-advance. Reasons:</p>
+  <ul class="siglist bad">{% for reason in r.review_reasons %}<li>{{ reason }}</li>{% endfor %}</ul>
+  {% if r.ungrounded_claims %}
+  <p class="mut">Claims whose evidence did not trace to the candidate profile (dropped from trust):
+     {% for c in r.ungrounded_claims %}<code>{{ c }}</code> {% endfor %}</p>
+  {% endif %}
+</div>
+{% endif %}
+
+{% if r.coverage %}
+<div class="card">
+  <h2>QA auditor <span class="pill {{ 'done' if r.coverage.safe_to_surface_to_recruiter else 'reject' }}">{{ r.coverage.overall }}</span></h2>
+  <p class="mut">Independent second-opinion pass (does not re-score) — checks coverage, evidence grounding,
+     knockout logic, and bias. {{ 'Safe to surface.' if r.coverage.safe_to_surface_to_recruiter else 'Held for human review.' }}</p>
+  {% if r.coverage.failures %}
+  <ul class="siglist bad">{% for f in r.coverage.failures %}<li><strong>{{ f.check }}</strong>: {{ f.detail }}</li>{% endfor %}</ul>
+  {% endif %}
+</div>
+{% endif %}
+
+{% if r.synthesis %}
+<div class="card">
+  <h1>Verdict</h1>
+  <p>{{ r.synthesis.rationale }}</p>
+  <div class="cols" style="margin-top:6px">
+    <div>
+      <h2>Strengths</h2>
+      {% if r.synthesis.strengths %}
+      <ul class="siglist good">{% for f in r.synthesis.strengths %}
+        <li><span class="claim">{{ f.claim }}</span><span class="ev">“{{ f.evidence }}”</span></li>{% endfor %}</ul>
+      {% else %}<p class="mut">None noted.</p>{% endif %}
+    </div>
+    <div>
+      <h2>Weaknesses / risks</h2>
+      {% if r.synthesis.weaknesses %}
+      <ul class="siglist bad">{% for f in r.synthesis.weaknesses %}
+        <li><span class="claim">{{ f.claim }}</span><span class="ev">“{{ f.evidence }}”</span></li>{% endfor %}</ul>
+      {% else %}<p class="mut">None noted.</p>{% endif %}
+    </div>
+  </div>
+</div>
+{% endif %}
+
+<div class="cols">
+  {% if r.tech %}
+  <div class="card">
+    <h1>Technical evaluation <span class="mut">depth {{ r.tech.depth_score }}/100</span></h1>
+    {% if r.tech.open_source_score is defined or r.tech.self_projects_score is defined or r.tech.production_score is defined or r.tech.technical_breadth_score is defined %}
+    {% set os = r.tech.open_source_score or 0 %}{% set sp = r.tech.self_projects_score or 0 %}
+    {% set pr = r.tech.production_score or 0 %}{% set br = r.tech.technical_breadth_score or 0 %}
+    <div class="stack">
+      <span style="width:{{ os }}%;background:var(--ok)"></span>
+      <span style="width:{{ sp }}%;background:var(--acc)"></span>
+      <span style="width:{{ pr }}%;background:var(--info)"></span>
+      <span style="width:{{ br }}%;background:var(--warn)"></span>
+    </div>
+    <div class="stack-legend">
+      <span><i style="background:var(--ok)"></i>Open source {{ os }}/35</span>
+      <span><i style="background:var(--acc)"></i>Self projects {{ sp }}/30</span>
+      <span><i style="background:var(--info)"></i>Production {{ pr }}/25</span>
+      <span><i style="background:var(--warn)"></i>Breadth {{ br }}/10</span>
+    </div>
+    {% endif %}
+    <p class="mut">{{ r.tech.summary }}</p>
+    <h2>Matched</h2>
+    {% if r.tech.matched %}
+    <ul class="siglist good">{% for f in r.tech.matched %}
+      <li><span class="claim">{{ f.claim }}</span><span class="ev">“{{ f.evidence }}”</span></li>{% endfor %}</ul>
+    {% else %}<p class="mut">No matches recorded.</p>{% endif %}
+    {% if r.tech.transferable %}
+    <h2>Transferable / adjacent <span class="mut">(credited despite terminology gap)</span></h2>
+    <ul class="siglist">{% for f in r.tech.transferable %}
+      <li><span class="claim">{{ f.claim }}</span><span class="ev">“{{ f.evidence }}”</span></li>{% endfor %}</ul>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  {% if r.risk %}
+  <div class="card">
+    <h1>Risk <span class="mut">score {{ r.risk.risk_score }}/100</span></h1>
+    {% if r.risk.flags %}
+    <ul class="siglist bad">{% for f in r.risk.flags %}
+      <li><span class="claim">{{ f.claim }}</span><span class="ev">“{{ f.evidence }}”</span></li>{% endfor %}</ul>
+    {% else %}<p class="mut">No risk flags.</p>{% endif %}
+  </div>
+  {% endif %}
+</div>
+
+{% if r.hr %}
+<div class="card">
+  <h1>People / HR view <span class="mut">people fit {{ r.hr.people_score }}/100</span></h1>
+  {% if r.hr.summary %}<p class="mut">{{ r.hr.summary }}</p>{% endif %}
+  <div class="cols" style="margin-top:6px">
+    <div>
+      <h2>People strengths</h2>
+      {% if r.hr.strengths %}
+      <ul class="siglist good">{% for f in r.hr.strengths %}
+        <li><span class="claim">{{ f.claim }}</span><span class="ev">“{{ f.evidence }}”</span></li>{% endfor %}</ul>
+      {% else %}<p class="mut">None noted.</p>{% endif %}
+    </div>
+    <div>
+      <h2>People concerns</h2>
+      {% if r.hr.concerns %}
+      <ul class="siglist bad">{% for f in r.hr.concerns %}
+        <li><span class="claim">{{ f.claim }}</span><span class="ev">“{{ f.evidence }}”</span></li>{% endfor %}</ul>
+      {% else %}<p class="mut">None noted.</p>{% endif %}
+    </div>
+  </div>
+  <p class="mut">Soft-factor lens only — communication, collaboration, trajectory, motivation. Never weighs a protected class; a human makes the call.</p>
+</div>
+{% endif %}
+
+{# ---------- ZONE C · AUDIT: parsed source data, collapsed by default ---------- #}
+{% if p %}
+<details class="fold">
+  <summary>Parsed profile <span class="mut">— skills, work history, education, projects</span></summary>
+  <div class="foldbody">
+  <p class="mut">{{ p.total_years }}y total · auth: {{ p.work_authorization or '—' }} · titles: {{ p.titles|join(', ') or '—' }}</p>
+
+  <h2>Skills</h2>
+  {% set musthaves = (job.spec.must_have_skills | map('lower') | list) if job and job.spec else [] %}
+  <div class="skillchips">
+    {% for s in p.skills %}
+    <span class="skillchip {{ s.proficiency.value }}{% if s.name|lower in musthaves %} must{% endif %}"
+          title="{{ s.proficiency.value }} · {{ s.years }}y{% if s.evidence %} · “{{ s.evidence }}”{% endif %}">
+      {{ s.name }}{% if s.years %}<span class="yr">{{ s.years }}y</span>{% endif %}
+    </span>
+    {% endfor %}
+    {% if r.tech and r.tech.missing_must_haves %}
+      {% for m in r.tech.missing_must_haves %}<span class="skillchip miss" title="missing must-have">{{ m }}</span>{% endfor %}
+    {% endif %}
+  </div>
+  <p class="mut" style="font-size:11.5px;">Tinted by proficiency · <span style="box-shadow:0 0 0 2px var(--acc-dim);padding:0 4px;border-radius:4px;">ringed</span> = role must-have · <s>struck</s> = missing must-have · hover for evidence.</p>
+
+  <h2>Work History</h2>
+  {% if p.work_entries %}
+    <div style="display:flex; flex-direction:column; gap:14px; margin-bottom:18px; margin-top:6px;">
+      {% for w in p.work_entries %}
+        <div style="border-left:2px solid var(--line2); padding-left:12px;">
+          <div style="display:flex; justify-content:space-between; font-weight:600;">
+            <span>{{ w.title }}</span>
+            <span class="mut" style="font-size:12px;">{{ w.start_date or '—' }} to {{ w.end_date or 'Present' }}</span>
+          </div>
+          <div class="mut" style="font-size:12px; margin-bottom:4px;">{{ w.company }}</div>
+          {% if w.highlights %}
+            <ul style="margin:4px 0 0 16px; padding:0; font-size:12.5px; color:var(--fg2);">
+              {% for h in w.highlights %}<li>{{ h }}</li>{% endfor %}
+            </ul>
+          {% endif %}
+        </div>
+      {% endfor %}
+    </div>
+  {% else %}<p class="mut">No work history parsed.</p>{% endif %}
+
+  <h2>Education</h2>
+  {% if p.education %}
+    <div style="display:flex; flex-direction:column; gap:10px; margin-bottom:18px; margin-top:6px;">
+      {% for e in p.education %}
+        <div style="border-left:2px solid var(--line2); padding-left:12px;">
+          <div style="display:flex; justify-content:space-between; font-weight:600;">
+            <span>{{ e.degree }}{% if e.field_of_study %} in {{ e.field_of_study }}{% endif %}</span>
+            <span class="mut" style="font-size:12px;">{{ e.start_date or '—' }} to {{ e.end_date or '—' }}</span>
+          </div>
+          <div class="mut" style="font-size:12px;">{{ e.institution }}{% if e.score %} · GPA/Score: {{ e.score }}{% endif %}</div>
+        </div>
+      {% endfor %}
+    </div>
+  {% else %}<p class="mut">No education parsed.</p>{% endif %}
+
+  {% if p.github_projects %}
+  <h2>GitHub Projects & Contributions</h2>
+  <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:14px; margin-bottom:18px; margin-top:6px;">
+    {% for proj in p.github_projects %}
+      <div class="card" style="margin-bottom:0; background:var(--card2); padding:12px 14px; border:1px solid var(--line2);">
+        <div style="display:flex; justify-content:space-between; align-items:center; font-weight:600; margin-bottom:4px;">
+          <a href="{{ proj.github_url or '#' }}" target="_blank" style="color:var(--fg); font-weight:600;">{{ proj.name }}</a>
+          <span class="pill {% if proj.project_type == 'open_source' %}done{% else %}maybe{% endif %}" style="font-size:10px; padding:2px 6px;">
+            {{ 'Open Source' if proj.project_type == 'open_source' else 'Personal' }}
+          </span>
+        </div>
+        <p class="mut" style="font-size:12px; margin:4px 0 8px 0; line-height:1.4;">{{ proj.description or 'No description' }}</p>
+        <div style="display:flex; gap:10px; flex-wrap:wrap; font-size:11px; color:var(--mut);">
+          <span>⭐ {{ proj.github_details.stars or 0 }}</span>
+          <span>🍴 {{ proj.github_details.forks or 0 }}</span>
+          <span>👥 {{ proj.contributor_count or 1 }} contribs</span>
+          {% if proj.author_commit_count %}<span>✍️ {{ proj.author_commit_count }} / {{ proj.total_commit_count }} commits</span>{% endif %}
+        </div>
+        {% if proj.technologies %}
+          <div style="margin-top:8px;">
+            {% for tech in proj.technologies %}<code style="font-size:10px; background:var(--line); padding:1px 4px; border-radius:3px; margin-right:4px;">{{ tech }}</code>{% endfor %}
+          </div>
+        {% endif %}
+      </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% if p.linkedin_profile and (p.linkedin_profile.positions or p.linkedin_profile.skills) %}
+  <h2>LinkedIn Profile <span class="mut" style="font-size:12px;">(resume-derived)</span></h2>
+  {% if p.linkedin_profile.headline %}<p style="font-weight:600; margin:4px 0 10px 0;">{{ p.linkedin_profile.headline }}</p>{% endif %}
+  {% for pos in p.linkedin_profile.positions %}
+    <div class="card" style="margin-bottom:10px; background:var(--card2); padding:12px 14px; border:1px solid var(--line2);">
+      <div style="display:flex; justify-content:space-between; align-items:center; font-weight:600;">
+        <span>{{ pos.title or 'Role' }}{% if pos.company %} · {{ pos.company }}{% endif %}</span>
+        {% if pos.duration %}<span class="mut" style="font-size:11px;">{{ pos.duration }}</span>{% endif %}
+      </div>
+      {% if pos.highlights %}
+        <ul style="margin:6px 0 0 0; padding-left:18px; font-size:12px; color:var(--mut); line-height:1.5;">
+          {% for h in pos.highlights %}<li>{{ h }}</li>{% endfor %}
+        </ul>
+      {% endif %}
+    </div>
+  {% endfor %}
+  {% if p.linkedin_profile.skills %}
+    <div style="margin:8px 0 18px 0;">
+      {% for sk in p.linkedin_profile.skills %}<code style="font-size:10px; background:var(--line); padding:1px 4px; border-radius:3px; margin-right:4px;">{{ sk }}</code>{% endfor %}
+    </div>
+  {% endif %}
+  {% endif %}
+
+  <p class="mut">PII (name/email/phone/location/grad-year) is stripped before any model sees the profile; shown here only post-screening for the human reviewer.</p>
+  </div>
+</details>
+{% endif %}
+
+{% if readability %}
+<details class="fold">
+  <summary>ATS readability <span class="mut">— {{ readability.score }}/100, deterministic parse check</span></summary>
+  <div class="foldbody">
+  <table>
+    {% for ch in readability.checks %}
+    <tr><td>{% if ch.ok %}<span style="color:var(--ok)">✓</span>{% else %}<span style="color:var(--bad)">✗</span>{% endif %} {{ ch.name }}</td>
+        <td class="mut">{{ ch.detail }}</td></tr>
+    {% endfor %}
+  </table>
+  <p class="mut">Deterministic check on how cleanly this resume parsed (contact, skills, titles, years, keyword coverage). Low scores often mean a scanned/poorly-formatted CV a real ATS would mishandle.</p>
+  </div>
+</details>
+{% endif %}
+
+{% if trace %}
+<details class="fold">
+  <summary>Agent activity <span class="mut">— run {{ trace.id[:8] }}, {{ trace.span_count }} call(s), est ${{ '%.4f'|format(trace.total_cost_usd) }}</span></summary>
+  <div class="foldbody">
+  <p class="mut">{{ trace.span_count }} agent call(s) · {{ '%.0f'|format(trace.total_ms) }} ms ·
+     est ${{ '%.4f'|format(trace.total_cost_usd) }} · <span class="pill {{ trace.status }}">{{ trace.status }}</span>
+     {% if trace.cache_hit %}<span class="pill done">served from cache</span>{% endif %}</p>
+  {% if trace.spans %}
+  <table>
+    <tr><th>#</th><th>Agent</th><th>Model</th><th class="right">ms</th><th class="right">$</th><th>Status</th></tr>
+    {% for s in trace.spans %}
+    <tr>
+      <td class="mut">{{ s.ordinal }}</td>
+      <td>{{ s.agent }} <span class="mut">{{ s.name }}</span></td>
+      <td><code>{{ s.model or '—' }}</code></td>
+      <td class="right num">{{ '%.0f'|format(s.latency_ms) }}</td>
+      <td class="right num">{{ '%.4f'|format(s.cost_usd) }}</td>
+      <td>{% if s.error %}<span class="pill failed">err</span>
+          {% elif s.cache_hit %}<span class="pill done">cache</span>
+          {% else %}<span class="pill done">ok</span>{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}<p class="mut">No spans (cache hit — no agents were invoked).</p>{% endif %}
+  </div>
+</details>
+{% endif %}
+{% endblock %}

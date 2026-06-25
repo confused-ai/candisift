@@ -1,0 +1,221 @@
+{% extends "base.html" %}
+{% block title %}Cover Letter{% if job %} · {{ job.title }}{% endif %}{% endblock %}
+
+{% block head %}
+<style>
+  .cl-textarea { min-height:420px; font-family:"SF Mono",ui-monospace,monospace;
+                 font-size:11.5px; resize:vertical; line-height:1.65; }
+  .cl-out      { min-height:320px; font-family:inherit; font-size:13px;
+                 line-height:1.75; resize:vertical; }
+  .job-pick-card { display:block; text-decoration:none; padding:14px 16px;
+                   border:1px solid var(--line); border-radius:var(--r);
+                   background:var(--card); transition:border-color .12s, background .12s; }
+  .job-pick-card:hover { border-color:var(--acc); background:var(--acc-dim); }
+  .job-pick-card .jt { font-weight:600; color:var(--fg); font-size:13.5px; }
+  .job-pick-card .jm { color:var(--mut); font-size:11.5px; margin-top:4px; line-height:1.5; }
+  .copy-btn { font-size:12px; padding:4px 11px; }
+  .editor-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; }
+  .editor-header h1 { margin:0; }
+  .cl-print-text { display:none; }
+  @media print {
+    header, nav, form, .btn, .metarow, [data-copy-from], [data-print],
+    .cols > div:last-child, .editor-header div { display:none !important; }
+    .cols { display:block !important; }
+    .card { border:none !important; box-shadow:none !important;
+            padding:0 !important; background:transparent !important; }
+    .editor-header { margin-bottom:10px; }
+    #cl-out { display:none !important; }
+    .cl-print-text { display:block !important; white-space:pre-wrap;
+                     font-family:Georgia,serif; font-size:11pt; line-height:1.75;
+                     color:#111; margin:0; padding:0; border:none; background:transparent; }
+  }
+</style>
+{% endblock %}
+
+{% block headerright %}
+{% if job %}
+<a href="/jobs/{{ job.id }}" class="btn secondary" style="font-size:12px;padding:5px 11px">← {{ job.title }}</a>
+{% endif %}
+{% endblock %}
+
+{% block content %}
+<div class="pagehead">
+  <div>
+    <h1>Cover Letter Generator</h1>
+    <p>Tailored cover letter from your resume + JD keywords.
+      {% if job %}Targeting <strong>{{ job.title }}</strong>.
+      {% else %}Select a job to begin.{% endif %}
+    </p>
+  </div>
+</div>
+
+{% if error %}
+<div class="card callout" style="margin-bottom:16px"><strong>Error:</strong> {{ error }}</div>
+{% endif %}
+
+{# ════════════════════════════════════════════════════════════════════════════
+   STATE 1 — no job selected: show job picker
+   ════════════════════════════════════════════════════════════════════════════ #}
+{% if not job %}
+<div class="card">
+  <h1>Select a job to write for</h1>
+  <p class="mut" style="margin:0 0 14px">Each job has its own keyword list extracted from the JD.</p>
+  {% if jobs %}
+  <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:10px">
+    {% for j in jobs %}
+    <a href="/jobs/{{ j.id }}/cover-letter" class="job-pick-card">
+      <div class="jt">{{ j.title or j.id[:8] }}</div>
+      <div class="jm">
+        {% set mh = j.spec.must_have_skills %}
+        {% if mh %}
+          {{ mh[:4] | join(' · ') }}{% if mh | length > 4 %} <span style="color:var(--acc2)">+{{ mh | length - 4 }}</span>{% endif %}
+        {% else %}No keywords extracted{% endif %}
+      </div>
+    </a>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="mut">No jobs yet. <a href="/">Create one first →</a></p>
+  {% endif %}
+</div>
+
+{# ════════════════════════════════════════════════════════════════════════════
+   STATE 2 — job selected, no result: input form
+   ════════════════════════════════════════════════════════════════════════════ #}
+{% elif not result %}
+<div class="cols">
+
+  <div>
+    <form method="post" action="/jobs/{{ job.id }}/cover-letter" enctype="multipart/form-data">
+      <div class="card">
+        <h1>Resume</h1>
+        <label class="dropzone" style="margin-bottom:12px">
+          <span class="dz-icon">↑</span>
+          <span class="dz-title">Upload resume (PDF · DOCX · TXT)</span>
+          <span class="dz-sub">Or paste text below — the LLM maps your real achievements to the JD keywords</span>
+          <input type="file" name="resume_file" accept=".pdf,.docx,.txt,.md">
+        </label>
+        <div class="file-list" data-file-list></div>
+        <label style="margin-top:4px">Or paste full text</label>
+        <textarea name="resume_text" class="cl-textarea" style="min-height:220px"
+          placeholder="Jane Doe&#10;jane@example.com&#10;&#10;EXPERIENCE&#10;Senior Engineer, Acme Corp (2021–present)&#10;• Built distributed pipelines processing 10TB/day&#10;…"
+          >{{ resume_text or "" }}</textarea>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:14px">
+          <div>
+            <label>Tone</label>
+            <select name="tone">
+              <option value="professional">Professional</option>
+              <option value="enthusiastic">Enthusiastic</option>
+              <option value="concise">Concise</option>
+              <option value="formal">Formal</option>
+            </select>
+          </div>
+          <div>
+            <label>Model</label>
+            <select name="model">
+              {% for m in models %}
+              <option value="{{ m.id }}">{{ m.label }}</option>
+              {% endfor %}
+            </select>
+          </div>
+        </div>
+        <div class="metarow" style="margin-top:16px">
+          <button type="submit" data-loading="Writing cover letter…">Generate cover letter →</button>
+          <span class="mut" style="font-size:12px">One LLM call · max 350 words</span>
+        </div>
+      </div>
+    </form>
+  </div>
+
+  <div>
+    <div class="card">
+      <h1>What the generator does</h1>
+      <ul style="color:var(--fg2);line-height:2.1;padding-left:17px;margin:8px 0 16px">
+        <li>Opens with a hook specific to this role — no boilerplate openers</li>
+        <li>Maps your real achievements to JD must-have requirements</li>
+        <li>Cites specifics from your resume — no hallucinated facts</li>
+        <li>Closes with a confident call-to-action</li>
+        <li>Adjustable tone: professional / enthusiastic / concise / formal</li>
+      </ul>
+
+      <h2>Must-have keywords for this role</h2>
+      <div class="chips" style="gap:6px">
+        {% for s in job.spec.must_have_skills %}
+        <span class="chip">{{ s }}</span>
+        {% else %}
+        <span class="mut">None extracted — add must-haves to the JD</span>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+</div>
+
+{# ════════════════════════════════════════════════════════════════════════════
+   STATE 3 — result
+   ════════════════════════════════════════════════════════════════════════════ #}
+{% else %}
+
+<div class="cols" style="margin-bottom:16px">
+
+  <div class="card">
+    <div class="editor-header">
+      <h1>Generated cover letter
+        <span class="mut" style="font-weight:400;font-size:12px">tone: {{ result.tone }} · {{ result.model_used }}</span>
+      </h1>
+      <div style="display:flex;gap:6px">
+        <button type="button" class="btn secondary copy-btn" data-copy-from="#cl-out">Copy</button>
+        <button type="button" class="btn secondary copy-btn" data-print>Print PDF</button>
+      </div>
+    </div>
+    <pre class="cl-print-text" aria-hidden="true">{{ result.cover_letter }}</pre>
+    <textarea id="cl-out" class="cl-out">{{ result.cover_letter }}</textarea>
+  </div>
+
+  <div>
+    <div class="card">
+      <h1>Generate again</h1>
+      <form method="post" action="/jobs/{{ job.id }}/cover-letter">
+        <label>Resume text</label>
+        <textarea name="resume_text" class="cl-textarea" style="min-height:220px"
+          required>{{ resume_text or "" }}</textarea>
+        <label style="margin-top:12px;display:block">Tone</label>
+        <select name="tone" style="margin-bottom:10px">
+          <option value="professional"{% if result.tone == 'professional' %} selected{% endif %}>Professional</option>
+          <option value="enthusiastic"{% if result.tone == 'enthusiastic' %} selected{% endif %}>Enthusiastic</option>
+          <option value="concise"{% if result.tone == 'concise' %} selected{% endif %}>Concise</option>
+          <option value="formal"{% if result.tone == 'formal' %} selected{% endif %}>Formal</option>
+        </select>
+        <label>Model</label>
+        <select name="model">
+          {% for m in models %}
+          <option value="{{ m.id }}"{% if m.id == result.model_used %} selected{% endif %}>{{ m.label }}</option>
+          {% endfor %}
+        </select>
+        <div class="metarow" style="margin-top:14px">
+          <button type="submit" data-loading="Regenerating…">Regenerate →</button>
+        </div>
+      </form>
+    </div>
+
+    <div class="card" style="margin-top:12px">
+      <h1>Role context</h1>
+      <div class="chips" style="gap:6px">
+        {% for s in job.spec.must_have_skills %}
+        <span class="chip">{{ s }}</span>
+        {% else %}
+        <span class="mut">No keywords</span>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<div class="row" style="gap:10px;margin-bottom:32px">
+  <a href="/jobs/{{ job.id }}/cover-letter" class="btn secondary">New cover letter</a>
+  <a href="/jobs/{{ job.id }}" class="btn secondary">← Back to job</a>
+</div>
+
+{% endif %}
+{% endblock %}

@@ -1,0 +1,190 @@
+{% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+{% block headerright %}total spend <strong style="color:var(--fg)">${{ '%.4f'|format(kpis.spend) }}</strong>{% endblock %}
+{% block content %}
+
+<div class="pagehead">
+  <div>
+    <h1>Dashboard</h1>
+    <p>Spend, screening throughput, and outcomes across all roles.</p>
+  </div>
+</div>
+
+{# ---- KPI tiles ---- #}
+<div class="grid k4" style="margin-bottom:18px">
+  <div class="stat">
+    <div class="label">Total spend</div>
+    <div class="val">${{ '%.4f'|format(kpis.spend) }}</div>
+    <div class="sub">{{ kpis.screened }} screening run(s)</div>
+  </div>
+  <div class="stat ok">
+    <div class="label">Est. saved by cache</div>
+    <div class="val">${{ '%.4f'|format(kpis.saved) }}</div>
+    <div class="sub">{{ kpis.cache_rate }}% of runs served from cache</div>
+  </div>
+  <div class="stat info">
+    <div class="label">Candidates</div>
+    <div class="val">{{ kpis.candidates }}</div>
+    <div class="sub">{{ kpis.jobs }} role(s)</div>
+  </div>
+  <div class="stat ok">
+    <div class="label">Shortlisted</div>
+    <div class="val">{{ kpis.shortlist }}</div>
+    <div class="sub">avg fit {{ kpis.avg_fit }}/100</div>
+  </div>
+  <div class="stat">
+    <div class="label">Avg fit score</div>
+    <div class="val">{{ kpis.avg_fit }}<small>/100</small></div>
+    <div class="sub">across screened candidates</div>
+  </div>
+  <div class="stat info">
+    <div class="label">Avg screen latency</div>
+    <div class="val">{{ (kpis.avg_latency_ms/1000)|round(1) }}<small>s</small></div>
+    <div class="sub">per non-cached run</div>
+  </div>
+  <div class="stat warn">
+    <div class="label">Cache hit rate</div>
+    <div class="val">{{ kpis.cache_rate }}<small>%</small></div>
+    <div class="sub">no repeat LLM spend</div>
+  </div>
+  <div class="stat {{ 'bad' if kpis.errors else '' }}">
+    <div class="label">Errors</div>
+    <div class="val">{{ kpis.errors }}</div>
+    <div class="sub">failed runs</div>
+  </div>
+  <div class="stat {{ 'warn' if kpis.bias_flagged else 'ok' }}">
+    <div class="label">Bias review flags</div>
+    <div class="val">{{ kpis.bias_flagged }}</div>
+    <div class="sub">verdicts surfaced for human review</div>
+  </div>
+  <div class="stat {{ 'warn' if kpis.held_for_review else 'ok' }}">
+    <div class="label">Held for review</div>
+    <div class="val">{{ kpis.held_for_review }}</div>
+    <div class="sub">guardrails / QA auditor flagged — not auto-advanced</div>
+  </div>
+</div>
+
+<div class="cols">
+  {# ---- spend by model ---- #}
+  <div class="card">
+    <h1>Spend by model</h1>
+    {% if by_model %}
+    <div class="bars">
+      {% for m in by_model %}
+      <div class="bar">
+        <span class="name"><code>{{ m.model }}</code></span>
+        <span class="track"><span class="fill" style="width:{{ (m.cost_usd / model_max * 100)|round(1) }}%"></span></span>
+        <span class="amt">${{ '%.4f'|format(m.cost_usd) }}</span>
+      </div>
+      {% endfor %}
+    </div>
+    <p class="mut" style="margin:12px 0 0">{{ by_model|length }} model(s) · cheap tier per-candidate, strong tier for the final verdict.</p>
+    {% else %}<p class="mut">No spend yet — screen candidates to populate.</p>{% endif %}
+  </div>
+
+  {# ---- spend by stage (agent) ---- #}
+  <div class="card">
+    <h1>Spend &amp; latency by stage</h1>
+    {% if stages %}
+    <div class="bars">
+      {% for s in stages %}
+      <div class="bar">
+        <span class="name">{{ s.agent }}</span>
+        <span class="track"><span class="fill" style="width:{{ (s.total_cost_usd / stage_max * 100)|round(1) }}%"></span></span>
+        <span class="amt">${{ '%.4f'|format(s.total_cost_usd) }}</span>
+      </div>
+      {% endfor %}
+    </div>
+    <table style="margin-top:14px">
+      <tr><th>Stage</th><th class="right">Calls</th><th class="right">Cache</th><th class="right">Avg ms</th></tr>
+      {% for s in stages %}
+      <tr><td>{{ s.agent }}</td><td class="right num">{{ s.calls }}</td>
+          <td class="right num">{{ '%.0f%%'|format(s.cache_hit_rate*100) }}</td>
+          <td class="right num">{{ '%.0f'|format(s.avg_latency_ms) }}</td></tr>
+      {% endfor %}
+    </table>
+    {% else %}<p class="mut">No traced stages yet.</p>{% endif %}
+  </div>
+</div>
+
+{# ---- screening funnel ---- #}
+<div class="card">
+  <h1>Screening funnel</h1>
+  <div class="bars">
+    {% for f in funnel %}
+    <div class="bar">
+      <span class="name">{{ f.label }}</span>
+      <span class="track"><span class="fill" style="width:{{ (f.n / funnel_max * 100)|round(1) }}%"></span></span>
+      <span class="amt">{{ f.n }}</span>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+<div class="cols">
+  {# ---- recommendations ---- #}
+  <div class="card">
+    <h1>AI recommendations</h1>
+    {% set rtot = recs.shortlist + recs.maybe + recs.reject %}
+    {% if rtot %}
+    <div class="seg">
+      <span style="width:{{ (recs.shortlist/rtot*100)|round(1) }}%;background:var(--ok)"></span>
+      <span style="width:{{ (recs.maybe/rtot*100)|round(1) }}%;background:var(--warn)"></span>
+      <span style="width:{{ (recs.reject/rtot*100)|round(1) }}%;background:var(--bad)"></span>
+    </div>
+    <div class="legend">
+      <span><i style="background:var(--ok)"></i>Shortlist {{ recs.shortlist }}</span>
+      <span><i style="background:var(--warn)"></i>Maybe {{ recs.maybe }}</span>
+      <span><i style="background:var(--bad)"></i>Reject {{ recs.reject }}</span>
+    </div>
+    {% else %}<p class="mut">No screened candidates yet.</p>{% endif %}
+  </div>
+
+  {# ---- human decisions ---- #}
+  <div class="card">
+    <h1>Human decisions</h1>
+    {% set dtot = decisions.pending + decisions.accepted + decisions.rejected %}
+    {% if dtot %}
+    <div class="seg">
+      <span style="width:{{ (decisions.accepted/dtot*100)|round(1) }}%;background:var(--ok)"></span>
+      <span style="width:{{ (decisions.pending/dtot*100)|round(1) }}%;background:var(--warn)"></span>
+      <span style="width:{{ (decisions.rejected/dtot*100)|round(1) }}%;background:var(--bad)"></span>
+    </div>
+    <div class="legend">
+      <span><i style="background:var(--ok)"></i>Accepted {{ decisions.accepted }}</span>
+      <span><i style="background:var(--warn)"></i>Pending {{ decisions.pending }}</span>
+      <span><i style="background:var(--bad)"></i>Rejected {{ decisions.rejected }}</span>
+    </div>
+    {% else %}<p class="mut">No results to decide on yet.</p>{% endif %}
+  </div>
+</div>
+
+{# ---- recent runs ---- #}
+<div class="card">
+  <h1>Recent runs</h1>
+  {% if runs %}
+  <table>
+    <tr><th>Run</th><th>Kind</th><th>Status</th><th class="right">Spans</th>
+        <th class="right">Latency</th><th class="right">Cost</th><th>Started</th></tr>
+    {% for r in runs %}
+    <tr>
+      <td><code>{{ r.id[:8] }}</code></td>
+      <td>{{ r.kind }}{% if r.cache_hit %} <span class="pill done">cached</span>{% endif %}</td>
+      <td><span class="pill {{ r.status }}">{{ r.status }}</span></td>
+      <td class="right num">{{ r.span_count }}</td>
+      <td class="right num">{{ '%.1f'|format(r.total_ms/1000) }}s</td>
+      <td class="right num">${{ '%.4f'|format(r.total_cost_usd) }}</td>
+      <td class="mut">{{ r.started_at.strftime('%H:%M:%S') if r.started_at else '' }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <div class="empty">
+    <div class="empty-icon">📊</div>
+    <h3>No runs yet</h3>
+    <p>Create a role and screen resumes — agent traces will populate here.</p>
+  </div>
+  {% endif %}
+</div>
+
+{% endblock %}

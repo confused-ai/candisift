@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% block title %}Agents{% endblock %}
+{% block head %}
+<style>
+  .agent-grid { display:grid; gap:10px; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); }
+  .ag { background:var(--card); border:1px solid var(--line); border-radius:var(--r);
+        padding:16px 18px; display:flex; flex-direction:column; gap:10px; }
+  .ag-head { display:flex; align-items:flex-start; justify-content:space-between; gap:8px; }
+  .ag-name { font-weight:600; font-size:14px; }
+  .ag-stage { font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:.05em;
+              color:var(--mut); background:var(--bg2); border:1px solid var(--line2);
+              border-radius:4px; padding:2px 6px; white-space:nowrap; }
+  .ag-does { font-size:12.5px; color:var(--fg2); margin:0; line-height:1.5; }
+  .ag-tools { display:flex; gap:5px; flex-wrap:wrap; }
+  .ag-stats { display:grid; grid-template-columns:repeat(3,1fr);
+              border:1px solid var(--line); border-radius:var(--r-sm); overflow:hidden; }
+  .ag-stat { padding:8px 10px; text-align:center; border-right:1px solid var(--line); }
+  .ag-stat:last-child { border-right:none; }
+  .ag-stat .n { font-size:16px; font-weight:600; font-variant-numeric:tabular-nums; }
+  .ag-stat .l { font-size:10px; color:var(--mut); text-transform:uppercase; letter-spacing:.04em; font-weight:600; margin-top:2px; }
+</style>
+{% endblock %}
+{% block content %}
+<div class="pagehead">
+  <div>
+    <h1>Agents</h1>
+    <p>Specialized agents run the funnel — each call traced. Identical (resume, job, model) triplets served from cache with no repeat LLM spend.</p>
+  </div>
+  <a href="/dashboard" class="btn secondary">Analytics →</a>
+</div>
+
+<div class="card">
+  <h1>Roster</h1>
+  <div class="agent-grid" style="margin-top:4px">
+    {% for a in agents %}
+    <div class="ag">
+      <div class="ag-head">
+        <span class="ag-name">{{ a.name }}</span>
+        <span class="ag-stage">{{ a.stage }}</span>
+      </div>
+      <p class="ag-does">{{ a.does }}</p>
+      {% if a.tools %}
+      <div class="ag-tools">
+        {% for t in a.tools %}<span class="chip" style="font-size:11px">{{ t }}</span>{% endfor %}
+      </div>
+      {% endif %}
+      <div class="ag-stats">
+        <div class="ag-stat">
+          <div class="n">{{ a.stats.calls or 0 }}</div>
+          <div class="l">Calls</div>
+        </div>
+        <div class="ag-stat">
+          <div class="n">{{ '%.0f'|format((a.stats.cache_hit_rate or 0)*100) }}<span style="font-size:11px;font-weight:400;color:var(--mut)">%</span></div>
+          <div class="l">Cache</div>
+        </div>
+        <div class="ag-stat">
+          <div class="n" style="font-size:13px">${{ '%.4f'|format(a.stats.total_cost_usd or 0) }}</div>
+          <div class="l">Spend</div>
+        </div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+<div class="card">
+  <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:10px">
+    <h1 style="margin:0">Recent runs</h1>
+    <div style="display:flex;gap:6px;align-items:center">
+      {% for k, v in queue.items() %}
+      <span class="badge {{ 'ok' if k=='done' else 'warn' if k in ('running','pending') else 'info' }}">{{ k }}: {{ v }}</span>
+      {% endfor %}
+    </div>
+  </div>
+  {% if runs %}
+  <table>
+    <tr><th>Run</th><th>Kind</th><th>Status</th><th class="right">Spans</th>
+        <th class="right">Latency</th><th class="right">Cost</th><th>Started</th></tr>
+    {% for r in runs %}
+    <tr>
+      <td><code>{{ r.id[:8] }}</code></td>
+      <td>{{ r.kind }}{% if r.cache_hit %} <span class="pill done">cached</span>{% endif %}</td>
+      <td><span class="pill {{ r.status }}">{{ r.status }}</span></td>
+      <td class="right num">{{ r.span_count }}</td>
+      <td class="right num">{{ '%.1f'|format(r.total_ms/1000) }}s</td>
+      <td class="right num">${{ '%.4f'|format(r.total_cost_usd) }}</td>
+      <td class="mut">{{ r.started_at.strftime('%H:%M:%S') if r.started_at else '' }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <div class="empty">
+    <div class="empty-icon">🤖</div>
+    <h3>No runs yet</h3>
+    <p>Create a role and screen resumes — agent activity will appear here.</p>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

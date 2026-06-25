@@ -1,0 +1,301 @@
+{% extends "base.html" %}
+{% block title %}Resume Match{% if result %} · {{ result.score }}%{% endif %}{% endblock %}
+
+{% block head %}
+<style>
+  .match-grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  @media (max-width:760px) { .match-grid { grid-template-columns:1fr; } }
+  .kw-grid  { display:flex; flex-wrap:wrap; gap:6px; margin-top:10px; }
+  .kw-pill  { display:inline-flex; align-items:center; gap:5px; padding:3px 9px 3px 7px;
+              border-radius:6px; font-size:11.5px; font-weight:500; border:1px solid transparent; }
+  .kw-pill.present { background:rgba(76,183,130,.12);  color:var(--ok);   border-color:rgba(76,183,130,.22); }
+  .kw-pill.missing  { background:rgba(235,87,87,.12);  color:var(--bad);  border-color:rgba(235,87,87,.22); }
+  .ats-check { display:flex; align-items:center; gap:10px; padding:8px 0;
+               border-bottom:1px solid var(--line); }
+  .ats-check:last-child { border-bottom:none; }
+  .ats-icon   { font-size:13px; width:20px; text-align:center; flex-shrink:0; }
+  .ats-name   { font-size:12.5px; font-weight:500; flex:1; }
+  .ats-detail { font-size:11.5px; color:var(--mut); text-align:right; }
+  .score-banner { display:grid; grid-template-columns:auto 1fr; gap:24px; align-items:center; }
+  .stat-row { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }
+  .stat-box { background:var(--bg2); border:1px solid var(--line); border-radius:var(--r-sm);
+              padding:12px 14px; text-align:center; }
+  .stat-box .sv { font-size:22px; font-weight:600; font-variant-numeric:tabular-nums; }
+  .stat-box .sl { font-size:11px; color:var(--mut); text-transform:uppercase; letter-spacing:.05em; margin-top:3px; }
+  .inp-area  { min-height:280px; font-family:"SF Mono",ui-monospace,monospace;
+               font-size:11.5px; resize:vertical; line-height:1.65; }
+  .m-ring-wrap { display:flex; flex-direction:column; align-items:center; gap:8px; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="pagehead">
+  <div>
+    <h1>Resume Match</h1>
+    <p>Instant keyword analysis — paste resume + JD, get match % in one second. Zero LLM cost.</p>
+  </div>
+  {% if result %}
+  <div style="display:flex;gap:8px;flex-wrap:wrap">
+    <a href="/optimize" class="btn">Optimize with AI →</a>
+    <a href="/cover-letter" class="btn secondary">Cover letter →</a>
+    <button type="button" class="btn secondary" data-print>Print PDF</button>
+  </div>
+  {% endif %}
+</div>
+
+{% if not result %}
+{# ═══════════════════════════════════════════════════════════════
+   STATE 1 — input form
+   ═══════════════════════════════════════════════════════════════ #}
+<form method="post" action="/match" enctype="multipart/form-data">
+  <div class="match-grid">
+    <div class="card">
+      <h1>Your resume</h1>
+      <label class="dropzone" style="margin-bottom:10px">
+        <span class="dz-icon">↑</span>
+        <span class="dz-title">Upload resume (PDF · DOCX · TXT)</span>
+        <span class="dz-sub">Or paste text below</span>
+        <input type="file" name="resume_file" accept=".pdf,.docx,.txt,.md">
+      </label>
+      <div class="file-list" data-file-list></div>
+      <label>Or paste full text</label>
+      <textarea name="resume_text" class="inp-area"
+        placeholder="Jane Doe&#10;jane@example.com | linkedin.com/in/jane&#10;&#10;EXPERIENCE&#10;Senior Engineer, Acme Corp (2021–present)&#10;• Built distributed data pipelines processing 10 TB/day…&#10;&#10;SKILLS&#10;Python, FastAPI, PostgreSQL, Docker, Kubernetes"
+        >{{ resume_text or "" }}</textarea>
+    </div>
+    <div class="card">
+      <h1>Job description</h1>
+      <label>Paste the full JD — more detail = better keyword extraction</label>
+      <textarea name="jd_text" class="inp-area"
+        placeholder="Senior Python Engineer&#10;&#10;Requirements:&#10;• 3+ years Python&#10;• FastAPI or Django&#10;• PostgreSQL, Redis&#10;• Docker, Kubernetes"
+        required>{{ jd_text or "" }}</textarea>
+    </div>
+  </div>
+  <div class="metarow" style="margin-top:14px">
+    <button type="submit" data-loading="Analysing…">Analyse match →</button>
+    <span class="mut" style="font-size:12px">Deterministic · instant · zero LLM cost</span>
+  </div>
+</form>
+
+{% else %}
+{# ═══════════════════════════════════════════════════════════════
+   STATE 2 — results
+   ═══════════════════════════════════════════════════════════════ #}
+<div class="card" style="margin-bottom:14px">
+  <div class="score-banner">
+    {% set rc = "var(--ok)" if result.score >= 70 else "var(--warn)" if result.score >= 45 else "var(--bad)" %}
+    <div class="m-ring-wrap">
+      <div class="ring" style="--p:{{ result.score }};--rc:{{ rc }}">
+        <div class="hole">
+          <div class="ringv">{{ result.score }}</div>
+          <div class="ringl">ATS</div>
+        </div>
+      </div>
+      <span class="mut" style="font-size:11px;text-align:center">ATS readability</span>
+    </div>
+    <div style="flex:1">
+      <div class="stat-row">
+        <div class="stat-box">
+          <div class="sv" style="color:var(--ok)">{{ result.present }}</div>
+          <div class="sl">Matched</div>
+        </div>
+        <div class="stat-box">
+          <div class="sv" style="color:var(--bad)">{{ result.total - result.present }}</div>
+          <div class="sl">Missing</div>
+        </div>
+        <div class="stat-box">
+          <div class="sv">{% if result.total %}{{ ((result.present / result.total) * 100) | int }}%{% else %}—{% endif %}</div>
+          <div class="sl">Coverage</div>
+        </div>
+      </div>
+      {% if result.title %}
+      <p class="mut" style="margin:10px 0 0;font-size:12.5px">
+        Role: <strong style="color:var(--fg)">{{ result.title }}</strong>
+        {% if result.min_years %} · {{ result.min_years | int }}y+ required{% endif %}
+      </p>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+<div class="match-grid">
+
+  {# LEFT: keyword analysis + ATS checklist #}
+  <div>
+    <div class="card">
+      <h1>Keyword analysis
+        <span class="mut" style="font-weight:400;font-size:12px">{{ result.total }} must-haves from JD</span>
+      </h1>
+      {% if result.gaps %}
+      <div class="kw-grid">
+        {% for g in result.gaps %}
+        <span class="kw-pill {{ 'present' if g.present else 'missing' }}">
+          <span style="font-size:10px;font-weight:700">{{ '✓' if g.present else '✗' }}</span>
+          {{ g.keyword }}
+        </span>
+        {% endfor %}
+      </div>
+      {% else %}
+      <p class="mut" style="margin:8px 0 0">No must-have keywords extracted. Add explicit requirements like
+        <code>Must have: Python, Docker</code> to the JD.</p>
+      {% endif %}
+    </div>
+
+    {% set missing_kws = result.gaps | selectattr('present', 'equalto', false) | list %}
+    {% if missing_kws %}
+    <div class="card" style="margin-top:12px;border-color:rgba(235,87,87,.28);background:rgba(235,87,87,.04)">
+      <h1 style="color:var(--bad)">{{ missing_kws | length }} keyword(s) to add</h1>
+      <p class="mut" style="font-size:12.5px;margin:0 0 10px">Weave these into bullets in context — don't just keyword-stuff:</p>
+      <div class="kw-grid">
+        {% for g in missing_kws %}
+        <span class="kw-pill missing">{{ g.keyword }}</span>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+
+    <div class="card" style="margin-top:12px">
+      <h1>ATS readability checklist</h1>
+      {% for ch in result.checks %}
+      <div class="ats-check">
+        <span class="ats-icon" style="color:{{ 'var(--ok)' if ch.ok else 'var(--bad)' }}">{{ '✓' if ch.ok else '✗' }}</span>
+        <span class="ats-name" style="color:{{ 'var(--fg)' if ch.ok else 'var(--bad)' }}">{{ ch.name }}</span>
+        <span class="ats-detail">{{ ch.detail }}</span>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+
+  {# RIGHT: next steps + re-analyse #}
+  <div>
+    <div class="card">
+      <h1>Improve this resume</h1>
+      <p class="mut" style="font-size:12.5px;margin:0 0 14px">
+        The AI optimizer rewrites your resume for the target role — adds missing keywords in context,
+        strengthens action verbs, improves ATS formatting.
+      </p>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <a href="/optimize" class="btn" style="text-align:center;display:block">Optimize with AI → (rewrites + adds keywords)</a>
+        <a href="/cover-letter" class="btn secondary" style="text-align:center;display:block">Generate a tailored cover letter →</a>
+      </div>
+      {% if result.score < 70 %}
+      <div class="card" style="margin-top:12px;border-color:rgba(242,201,76,.3);background:rgba(242,201,76,.05)">
+        <p class="mut" style="margin:0;font-size:12.5px">
+          <strong style="color:var(--warn)">Score {{ result.score }}/100.</strong>
+          {% if result.score < 45 %}Significant work needed to pass ATS filters. Use the optimizer to rewrite for this role.
+          {% else %}Good base — a few targeted keyword additions should push above 70.{% endif %}
+        </p>
+      </div>
+      {% else %}
+      <div class="card" style="margin-top:12px;border-color:rgba(76,183,130,.3);background:rgba(76,183,130,.05)">
+        <p class="mut" style="margin:0;font-size:12.5px">
+          <strong style="color:var(--ok)">Score {{ result.score }}/100.</strong>
+          Strong ATS match. Use the optimizer to polish phrasing and tailor achievements to this role.
+        </p>
+      </div>
+      {% endif %}
+    </div>
+
+    <div class="card" style="margin-top:12px">
+      <h1>Re-analyse</h1>
+      <form method="post" action="/match" enctype="multipart/form-data">
+        <label style="display:block;margin-bottom:4px">Resume (upload or paste)</label>
+        <input type="file" name="resume_file" accept=".pdf,.docx,.txt,.md"
+               style="display:block;margin:4px 0 8px;font-size:12px;color:var(--fg2)">
+        <textarea name="resume_text" class="inp-area" style="min-height:100px">{{ resume_text }}</textarea>
+        <label style="display:block;margin:10px 0 4px">Job description</label>
+        <textarea name="jd_text" class="inp-area" style="min-height:80px" required>{{ jd_text }}</textarea>
+        <div class="metarow" style="margin-top:10px">
+          <button type="submit" data-loading="Re-analysing…">Re-analyse →</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+</div>
+
+{# ── Enhanced resume quality analysis ── #}
+{% if result.analysis %}
+<div style="margin-top:14px">
+  <h2 style="font-size:11.5px;font-weight:600;margin:0 0 10px;color:var(--mut);text-transform:uppercase;letter-spacing:.07em">Resume quality analysis</h2>
+  <div class="match-grid">
+
+    <div class="card">
+      {% set av = result.analysis.action_verbs %}
+      <h1 style="display:flex;align-items:center;gap:8px">Action verbs
+        <span style="font-size:11px;padding:2px 7px;border-radius:4px;font-weight:500;
+          background:{{ 'rgba(76,183,130,.14)' if av.ok else 'rgba(235,87,87,.14)' }};
+          color:{{ 'var(--ok)' if av.ok else 'var(--bad)' }}">{{ av.score }}%</span>
+      </h1>
+      <p class="mut" style="font-size:12px;margin:0 0 8px">{{ av.strong }}/{{ av.total_bullets }} bullets open with strong verbs</p>
+      {% if av.weak_examples %}
+      <div style="font-size:11.5px;color:var(--bad)">Weak openers:
+        {% for ex in av.weak_examples %}
+        <div style="margin:4px 0 0;padding:4px 8px;background:rgba(235,87,87,.06);border-radius:4px;
+             font-family:var(--mono,monospace);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ ex }}</div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <p style="font-size:12px;color:var(--ok);margin:4px 0 0">All bullets open with strong verbs</p>
+      {% endif %}
+    </div>
+
+    <div class="card">
+      {% set q = result.analysis.quantification %}
+      <h1 style="display:flex;align-items:center;gap:8px">Quantification
+        <span style="font-size:11px;padding:2px 7px;border-radius:4px;font-weight:500;
+          background:{{ 'rgba(76,183,130,.14)' if q.ok else 'rgba(235,87,87,.14)' }};
+          color:{{ 'var(--ok)' if q.ok else 'var(--bad)' }}">{{ q.rate }}%</span>
+      </h1>
+      <p class="mut" style="font-size:12px;margin:0 0 8px">{{ q.quantified }}/{{ q.total_bullets }} bullets contain numbers or metrics</p>
+      {% if q.unquantified_examples %}
+      <div style="font-size:11.5px;color:var(--mut)">Add metrics to:
+        {% for ex in q.unquantified_examples %}
+        <div style="margin:4px 0 0;padding:4px 8px;background:var(--bg2);border-radius:4px;
+             font-family:var(--mono,monospace);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ ex }}</div>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </div>
+
+    <div class="card">
+      {% set sec = result.analysis.sections %}
+      <h1 style="display:flex;align-items:center;gap:8px">Sections
+        <span style="font-size:11px;padding:2px 7px;border-radius:4px;font-weight:500;
+          background:{{ 'rgba(76,183,130,.14)' if sec.ok else 'rgba(235,87,87,.14)' }};
+          color:{{ 'var(--ok)' if sec.ok else 'var(--bad)' }}">{{ 'complete' if sec.ok else 'incomplete' }}</span>
+      </h1>
+      <div class="chips" style="gap:5px;margin-top:8px">
+        {% for s in sec.found %}
+        <span class="chip" style="background:rgba(76,183,130,.1);color:var(--ok);border-color:rgba(76,183,130,.22)">✓ {{ s }}</span>
+        {% endfor %}
+        {% for s in sec.missing_core %}
+        <span class="chip" style="background:rgba(235,87,87,.08);color:var(--bad);border-color:rgba(235,87,87,.22)">✗ {{ s }}</span>
+        {% endfor %}
+      </div>
+    </div>
+
+    <div class="card">
+      {% set ln = result.analysis.length %}
+      <h1 style="display:flex;align-items:center;gap:8px">Length &amp; format
+        <span style="font-size:11px;padding:2px 7px;border-radius:4px;font-weight:500;
+          background:{{ 'rgba(76,183,130,.14)' if ln.ok else 'rgba(235,87,87,.14)' }};
+          color:{{ 'var(--ok)' if ln.ok else 'var(--bad)' }}">{{ ln.status }}</span>
+      </h1>
+      <p class="mut" style="font-size:12px;margin:0 0 8px">{{ ln.words }} words · ~{{ ln.pages_est }} page{% if ln.pages_est != 1.0 %}s{% endif %}</p>
+      {% set fmt = result.analysis.formatting %}
+      {% if fmt %}
+        {% for issue in fmt %}
+        <div style="margin:4px 0;padding:5px 8px;background:rgba(242,201,76,.07);
+             border:1px solid rgba(242,201,76,.28);border-radius:4px;font-size:11.5px;color:var(--warn)">⚠ {{ issue }}</div>
+        {% endfor %}
+      {% else %}
+      <p style="font-size:12px;color:var(--ok);margin:4px 0 0">No formatting issues detected</p>
+      {% endif %}
+    </div>
+
+  </div>
+</div>
+{% endif %}
+{% endif %}
+{% endblock %}

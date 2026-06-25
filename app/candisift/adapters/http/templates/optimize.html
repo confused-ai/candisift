@@ -1,0 +1,364 @@
+{% extends "base.html" %}
+{% block title %}Resume Optimizer{% if job %} · {{ job.title }}{% endif %}{% endblock %}
+
+{% block head %}
+<style>
+  /* ── optimizer-specific tokens ── */
+  .diff-grid  { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  @media(max-width:680px){ .diff-grid { grid-template-columns:1fr; } }
+  .diff-before{ background:rgba(235,87,87,.07);  border:1px solid rgba(235,87,87,.2);  border-radius:6px; padding:10px 12px; }
+  .diff-after { background:rgba(76,183,130,.07); border:1px solid rgba(76,183,130,.2); border-radius:6px; padding:10px 12px; }
+  .diff-label { font-size:10px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; display:block; margin-bottom:5px; }
+  .diff-before .diff-label { color:var(--bad); }
+  .diff-after  .diff-label { color:var(--ok);  }
+  .diff-text  { font-size:12.5px; color:var(--fg2); line-height:1.55; }
+
+  .opt-textarea { min-height:460px; font-family:"SF Mono",ui-monospace,monospace;
+                  font-size:11.5px; resize:vertical; line-height:1.65; }
+
+  /* job picker cards */
+  .job-pick-card { display:block; text-decoration:none; padding:14px 16px;
+                   border:1px solid var(--line); border-radius:var(--r);
+                   background:var(--card); transition:border-color .12s, background .12s; }
+  .job-pick-card:hover { border-color:var(--acc); background:var(--acc-dim); }
+  .job-pick-card .jt { font-weight:600; color:var(--fg); font-size:13.5px; }
+  .job-pick-card .jm { color:var(--mut); font-size:11.5px; margin-top:4px; line-height:1.5; }
+
+  /* keyword pills variant */
+  .kw-pill { display:inline-flex; align-items:center; gap:5px; padding:3px 9px 3px 7px;
+             border-radius:6px; font-size:11.5px; font-weight:500; border:1px solid transparent; }
+  .kw-pill.present { background:rgba(76,183,130,.12);  color:var(--ok);  border-color:rgba(76,183,130,.22); }
+  .kw-pill.added   { background:rgba(242,201,76,.12);  color:var(--warn);border-color:rgba(242,201,76,.22); }
+  .kw-pill.missing { background:rgba(235,87,87,.12);   color:var(--bad); border-color:rgba(235,87,87,.22); }
+  .kw-pill .kw-ico { font-size:10px; font-weight:700; }
+
+  /* match progress bar */
+  .match-bar-track { height:8px; background:var(--line2); border-radius:999px; overflow:hidden; margin-top:10px; }
+  .match-bar-fill  { height:100%; border-radius:999px; transition:width .4s ease; }
+
+  /* results stat tiles (4-up) */
+  .res-stats { display:grid; gap:12px; grid-template-columns:repeat(auto-fit,minmax(155px,1fr)); margin-bottom:16px; }
+  .res-stat  { background:var(--card); border:1px solid var(--line); border-radius:var(--r);
+               padding:14px 16px; position:relative; overflow:hidden; }
+  .res-stat::before { content:""; position:absolute; left:0; top:0; bottom:0; width:3px; }
+  .res-stat.ok::before   { background:var(--ok);   }
+  .res-stat.warn::before { background:var(--warn); }
+  .res-stat.bad::before  { background:var(--bad);  }
+  .res-stat.acc::before  { background:var(--acc);  }
+  .res-stat .rs-lbl { font-size:10.5px; color:var(--mut); text-transform:uppercase;
+                      letter-spacing:.06em; font-weight:600; margin-bottom:6px; }
+  .res-stat .rs-val { font-size:28px; font-weight:700; letter-spacing:-.02em; line-height:1;
+                      font-variant-numeric:tabular-nums; }
+  .rs-sub { color:var(--mut); font-size:12px; margin-top:5px; }
+
+  /* section badge */
+  .sec-badge { display:inline-block; padding:2px 8px; border-radius:5px; font-size:10.5px;
+               font-weight:600; background:rgba(94,106,210,.15); color:var(--acc2);
+               border:1px solid rgba(94,106,210,.25); letter-spacing:.02em; }
+
+  /* editor row — copy button aligns to card header */
+  .editor-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; }
+
+  .opt-print-text { display:none; }
+
+  @media print {
+    .pagehead, .res-stats, .card:not(.opt-print), .row,
+    header, nav, .metarow, .btn, [data-copy-from], [data-print],
+    select, button, .editor-header div, form { display:none !important; }
+    .cols { display:block !important; }
+    .opt-print { border:none !important; box-shadow:none !important;
+                 padding:0 !important; background:transparent !important; }
+    .editor-header { margin-bottom:8px; }
+    .editor-header h1 { font-size:14px; color:#111; }
+    #opt-resume { display:none !important; }
+    .opt-print-text { display:block !important; white-space:pre-wrap;
+                      font-family:Georgia,serif; font-size:10.5pt; line-height:1.65;
+                      color:#111; margin:0; padding:0; border:none; background:transparent; }
+  }
+  .editor-header h1 { margin:0; }
+  .copy-btn { font-size:12px; padding:4px 11px; }
+</style>
+{% endblock %}
+
+{% block headerright %}
+{% if job %}
+<a href="/jobs/{{ job.id }}" class="btn secondary" style="font-size:12px;padding:5px 11px">← {{ job.title }}</a>
+{% endif %}
+{% endblock %}
+
+{% block content %}
+<div class="pagehead">
+  <div>
+    <h1>Resume Optimizer</h1>
+    <p>Keyword-gap analysis · ATS-optimised rewrite · inline editing.
+      {% if job %}Targeting <strong>{{ job.title }}</strong>.
+      {% else %}Select a job to begin.{% endif %}
+    </p>
+  </div>
+  {% if job and not result %}
+  <a href="/optimize" class="btn secondary">Change job</a>
+  {% endif %}
+</div>
+
+{% if error %}
+<div class="card callout" style="margin-bottom:16px"><strong>Error:</strong> {{ error }}</div>
+{% endif %}
+
+{# ════════════════════════════════════════════════════════════════════════════
+   STATE 1 — no job selected: show job picker
+   ════════════════════════════════════════════════════════════════════════════ #}
+{% if not job %}
+<div class="card">
+  <h1>Select a job to optimise for</h1>
+  <p class="mut" style="margin:0 0 14px">Each job has its own keyword list extracted from the JD.</p>
+  {% if jobs %}
+  <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:10px">
+    {% for j in jobs %}
+    <a href="/jobs/{{ j.id }}/optimize" class="job-pick-card">
+      <div class="jt">{{ j.title or j.id[:8] }}</div>
+      <div class="jm">
+        {% set mh = j.spec.must_have_skills %}
+        {% if mh %}
+          {{ mh[:4] | join(' · ') }}{% if mh | length > 4 %} <span style="color:var(--acc2)">+{{ mh | length - 4 }}</span>{% endif %}
+        {% else %}No keywords extracted{% endif %}
+      </div>
+    </a>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="mut">No jobs yet. <a href="/">Create one first →</a></p>
+  {% endif %}
+</div>
+
+{# ════════════════════════════════════════════════════════════════════════════
+   STATE 2 — job selected, no result: input form
+   ════════════════════════════════════════════════════════════════════════════ #}
+{% elif not result %}
+<div class="cols">
+
+  {# left: paste + model #}
+  <div>
+    <form method="post" action="/jobs/{{ job.id }}/optimize" enctype="multipart/form-data">
+      <div class="card">
+        <h1>Resume text</h1>
+        <label class="dropzone" style="margin-bottom:10px">
+          <span class="dz-icon">↑</span>
+          <span class="dz-title">Upload resume (PDF · DOCX · TXT)</span>
+          <span class="dz-sub">Or paste text below</span>
+          <input type="file" name="resume_file" accept=".pdf,.docx,.txt,.md">
+        </label>
+        <div class="file-list" data-file-list></div>
+        <label>Or paste the full text</label>
+        <textarea name="resume_text" class="opt-textarea"
+          placeholder="Jane Doe&#10;jane@example.com · linkedin.com/in/jane&#10;&#10;EXPERIENCE&#10;Senior Engineer, Acme Corp (2021–present)&#10;• Built distributed pipelines processing 10TB/day&#10;…"
+          ></textarea>
+      </div>
+      <div class="card">
+        <h1>Model</h1>
+        <label>LLM for the rewrite — any provider configured in <code>.env</code></label>
+        <select name="model">
+          {% for m in models %}
+          <option value="{{ m.id }}">{{ m.label }}</option>
+          {% endfor %}
+        </select>
+        <div class="metarow" style="margin-top:16px">
+          <button type="submit" data-loading="Optimising resume…">Optimise →</button>
+          <span class="mut" style="font-size:12px">One LLM call · local Ollama = $0</span>
+        </div>
+      </div>
+    </form>
+  </div>
+
+  {# right: job context #}
+  <div>
+    <div class="card">
+      <h1>What the optimiser does</h1>
+      <ul style="color:var(--fg2);line-height:2.1;padding-left:17px;margin:8px 0 16px">
+        <li>Weaves missing must-have keywords into existing bullets</li>
+        <li>Upgrades weak verbs → <em>achieved, built, scaled, delivered…</em></li>
+        <li>Surfaces implicit quantification — no invented facts</li>
+        <li>Preserves every title, company, date and real experience</li>
+        <li>Reports per-keyword status: present / added / still missing</li>
+        <li>Side-by-side diff: edit the output inline and re-analyse</li>
+      </ul>
+
+      <h2>Must-have keywords for this role</h2>
+      <div class="chips" style="gap:6px">
+        {% for s in job.spec.must_have_skills %}
+        <span class="kw-pill present"><span class="kw-ico">◆</span>{{ s }}</span>
+        {% else %}
+        <span class="mut">None extracted — add must-haves to the JD</span>
+        {% endfor %}
+      </div>
+
+      {% if job.spec.nice_to_have_skills %}
+      <h2>Nice-to-have</h2>
+      <div class="chips" style="gap:6px">
+        {% for s in job.spec.nice_to_have_skills %}
+        <span class="kw-pill added">{{ s }}</span>
+        {% endfor %}
+      </div>
+      {% endif %}
+
+      {% if job.spec.min_years %}
+      <h2>Min experience required</h2>
+      <span class="mut">{{ job.spec.min_years }} years</span>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+{# ════════════════════════════════════════════════════════════════════════════
+   STATE 3 — results
+   ════════════════════════════════════════════════════════════════════════════ #}
+{% else %}
+
+{# ── computed values ── #}
+{% set total_kws   = result.keyword_gaps | length %}
+{% set present_kws = result.keyword_gaps | selectattr('status', 'equalto', 'present') | list %}
+{% set added_kws   = result.keyword_gaps | selectattr('status', 'equalto', 'added')   | list %}
+{% set missing_kws = result.keyword_gaps | selectattr('status', 'equalto', 'missing') | list %}
+{% set covered     = present_kws | length + added_kws | length %}
+{% set match_pct   = ((covered / total_kws * 100) | int) if total_kws > 0 else 0 %}
+{% set delta       = result.ats_score_after - result.ats_score_before %}
+
+{# ── 4-stat banner ── #}
+<div class="res-stats">
+
+  {# Match % #}
+  <div class="res-stat {% if match_pct >= 80 %}ok{% elif match_pct >= 50 %}warn{% else %}bad{% endif %}">
+    <div class="rs-lbl">Keyword match</div>
+    <div class="rs-val" style="color:{% if match_pct>=80 %}var(--ok){% elif match_pct>=50 %}var(--warn){% else %}var(--bad){% endif %}">
+      {{ match_pct }}<span style="font-size:16px;font-weight:500;color:var(--mut)">%</span>
+    </div>
+    <div class="match-bar-track">
+      <div class="match-bar-fill" style="width:{{ match_pct }}%;background:{% if match_pct>=80 %}var(--ok){% elif match_pct>=50 %}var(--warn){% else %}var(--bad){% endif %}"></div>
+    </div>
+    <div class="rs-sub">{{ covered }} / {{ total_kws }} keywords covered</div>
+  </div>
+
+  {# ATS score improvement #}
+  <div class="res-stat {% if delta > 0 %}ok{% elif delta < 0 %}bad{% else %}acc{% endif %}">
+    <div class="rs-lbl">ATS readability</div>
+    <div class="rs-val" style="color:{% if delta>0 %}var(--ok){% elif delta<0 %}var(--bad){% else %}var(--mut){% endif %}">
+      {% if delta > 0 %}+{% endif %}{{ delta }}<span style="font-size:16px;font-weight:500;color:var(--mut)">pts</span>
+    </div>
+    <div class="rs-sub">{{ result.ats_score_before }} → {{ result.ats_score_after }} / 100</div>
+  </div>
+
+  {# Keywords added #}
+  <div class="res-stat {% if added_kws | length > 0 %}warn{% else %}acc{% endif %}">
+    <div class="rs-lbl">Keywords added</div>
+    <div class="rs-val" style="color:{% if added_kws|length>0 %}var(--warn){% else %}var(--mut){% endif %}">
+      {{ added_kws | length }}
+    </div>
+    <div class="rs-sub">
+      {% if missing_kws %}<span style="color:var(--bad)">{{ missing_kws | length }} still missing</span>
+      {% else %}All must-haves covered{% endif %}
+    </div>
+  </div>
+
+  {# Changes made #}
+  <div class="res-stat acc">
+    <div class="rs-lbl">Changes made</div>
+    <div class="rs-val" style="color:var(--acc2)">{{ result.changes | length }}</div>
+    <div class="rs-sub">
+      <code style="font-size:11px">{{ result.model_used }}</code>
+    </div>
+  </div>
+
+</div>
+
+{# ── keyword coverage ── #}
+<div class="card" style="margin-bottom:16px">
+  <h1>Keyword coverage
+    <span class="mut" style="font-weight:400;font-size:12px">— hover ✗ pills for placement hints</span>
+  </h1>
+  <div class="chips" style="gap:7px;margin-top:4px">
+    {% for g in result.keyword_gaps %}
+    <span class="kw-pill {{ g.status }}"
+          {% if g.suggestion %}title="{{ g.suggestion }}"{% endif %}>
+      <span class="kw-ico">{% if g.status=='present' %}✓{% elif g.status=='added' %}+{% else %}✗{% endif %}</span>
+      {{ g.keyword }}
+    </span>
+    {% endfor %}
+  </div>
+  <div style="display:flex;gap:18px;margin-top:14px;flex-wrap:wrap">
+    <span style="font-size:12px;color:var(--ok)">✓ present ({{ present_kws|length }})</span>
+    <span style="font-size:12px;color:var(--warn)">+ added ({{ added_kws|length }})</span>
+    <span style="font-size:12px;color:var(--bad)">✗ missing ({{ missing_kws|length }})</span>
+  </div>
+</div>
+
+{# ── section-level diff view ── #}
+{% if result.changes %}
+<div class="card" style="margin-bottom:16px">
+  <h1>Section changes
+    <span class="mut" style="font-weight:400;font-size:12px">{{ result.changes | length }} improvements</span>
+  </h1>
+  {% for chg in result.changes %}
+  <div style="padding:14px 0;{% if not loop.last %}border-bottom:1px solid var(--line);{% endif %}">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap">
+      <span class="sec-badge">{{ chg.section }}</span>
+      <span class="mut" style="font-size:12px">{{ chg.reason }}</span>
+    </div>
+    <div class="diff-grid">
+      <div class="diff-before">
+        <span class="diff-label">Before</span>
+        <span class="diff-text">{{ chg.original }}</span>
+      </div>
+      <div class="diff-after">
+        <span class="diff-label">After</span>
+        <span class="diff-text">{{ chg.improved }}</span>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+{# ── side-by-side editor ── #}
+<div class="cols" style="margin-bottom:16px">
+
+  {# original — read only #}
+  <div class="card">
+    <div class="editor-header">
+      <h1>Original <span class="mut" style="font-weight:400;font-size:12px">read-only</span></h1>
+    </div>
+    <textarea id="orig-resume" class="opt-textarea" readonly
+              style="color:var(--mut)">{{ result.original_resume }}</textarea>
+  </div>
+
+  {# optimised — editable + re-analyse #}
+  <div class="card opt-print">
+    <div class="editor-header">
+      <h1>Optimised <span class="mut" style="font-weight:400;font-size:12px">edit · then re-analyse</span></h1>
+      <div style="display:flex;gap:6px">
+        <button type="button" class="btn secondary copy-btn" data-copy-from="#opt-resume">Copy</button>
+        <button type="button" class="btn secondary copy-btn" data-print>Print PDF</button>
+      </div>
+    </div>
+    <pre class="opt-print-text" aria-hidden="true">{{ result.optimized_resume }}</pre>
+    <form method="post" action="/jobs/{{ job.id }}/optimize">
+      <textarea id="opt-resume" name="resume_text" class="opt-textarea">{{ result.optimized_resume }}</textarea>
+      <div style="display:flex;gap:10px;align-items:center;margin-top:10px;flex-wrap:wrap">
+        <select name="model" style="flex:1;min-width:160px">
+          {% for m in models %}
+          <option value="{{ m.id }}"{% if m.id == result.model_used %} selected{% endif %}>{{ m.label }}</option>
+          {% endfor %}
+        </select>
+        <button type="submit" data-loading="Re-analysing…" style="white-space:nowrap">Re-analyse →</button>
+      </div>
+    </form>
+  </div>
+
+</div>
+
+{# ── footer actions ── #}
+<div class="row" style="gap:10px;margin-bottom:32px">
+  <a href="/jobs/{{ job.id }}/optimize" class="btn secondary">Optimise another resume</a>
+  <a href="/jobs/{{ job.id }}" class="btn secondary">← Back to job</a>
+</div>
+
+{% endif %}
+{% endblock %}

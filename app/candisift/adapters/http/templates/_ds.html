@@ -1,0 +1,82 @@
+{# CandiSift design-system macros. Imported by base.html.
+   Every macro owns all of its states. CSS lives in /static/ds.css. #}
+
+{% macro status(text, kind='neutral') -%}
+  {%- set k = kind if kind in ['ok','warn','bad','info','neutral','running'] else 'neutral' -%}
+  <span class="status is-{{ k }}"><span class="status-dot" aria-hidden="true"></span>{{ text }}</span>
+{%- endmacro %}
+
+{% macro btn(label, variant='primary', type='button', name=None, value=None, disabled=False, loading=False) -%}
+  <button class="btn btn-{{ variant }}{% if loading %} is-loading{% endif %}" type="{{ type }}"
+    {% if name %}name="{{ name }}"{% endif %}{% if value is not none %} value="{{ value }}"{% endif %}
+    {% if disabled or loading %}disabled{% endif %}{% if loading %} aria-busy="true"{% endif %}>{{ label }}</button>
+{%- endmacro %}
+
+{% macro field(name, label, type='text', value='', error=None, help=None, required=False, placeholder='') -%}
+  <div class="field{% if error %} has-error{% endif %}">
+    <label for="f-{{ name }}">{{ label }}{% if required %}<span class="field-required" aria-hidden="true">*</span>{% endif %}</label>
+    <input id="f-{{ name }}" name="{{ name }}" type="{{ type }}" value="{{ value }}"
+      placeholder="{{ placeholder }}"{% if required %} required{% endif %}
+      {% if error %}aria-invalid="true" aria-describedby="e-{{ name }}"{% elif help %}aria-describedby="h-{{ name }}"{% endif %}>
+    {% if error %}<p class="field-error" id="e-{{ name }}">{{ error }}</p>
+    {% elif help %}<p class="field-help" id="h-{{ name }}">{{ help }}</p>{% endif %}
+  </div>
+{%- endmacro %}
+
+{% macro ds_empty(title, body=None, icon='∅', cta_label=None, cta_href=None) -%}
+  <div class="ds-empty">
+    <div class="ds-empty-icon" aria-hidden="true">{{ icon }}</div>
+    <h3>{{ title }}</h3>
+    {% if body %}<p>{{ body }}</p>{% endif %}
+    {% if cta_label and cta_href %}<a class="btn btn-primary" href="{{ cta_href }}">{{ cta_label }}</a>{% endif %}
+  </div>
+{%- endmacro %}
+
+{% macro table_wrap(sticky=False) -%}
+  <div class="table-wrap{% if sticky %} is-sticky{% endif %}">{{ caller() }}</div>
+{%- endmacro %}
+
+{% macro flash(kind, text) -%}
+  {%- set k = kind if kind in ['ok','warn','bad','info'] else 'info' -%}
+  <div class="flash flash-{{ k }}" role="status" data-flash>
+    <span>{{ text }}</span>
+    <button class="flash-close" type="button" aria-label="Dismiss" data-flash-close>×</button>
+  </div>
+{%- endmacro %}
+
+{% macro confirm_form(action, label, prompt, name=None, value=None, variant='danger') -%}
+  <form action="{{ action }}" method="post" data-confirm="{{ prompt }}">
+    {{ btn(label, variant=variant, type='submit', name=name, value=value) }}
+  </form>
+{%- endmacro %}
+
+{% macro breadcrumb(items) -%}
+  <nav class="breadcrumb" aria-label="Breadcrumb"><ol>
+    {% for label, href in items %}
+      <li>{% if href %}<a href="{{ href }}">{{ label }}</a>{% else %}<span aria-current="page">{{ label }}</span>{% endif %}</li>
+    {% endfor %}
+  </ol></nav>
+{%- endmacro %}
+
+{% macro _pct(value, max) %}{{ 0 if not max or value is none else ([[value / max * 100, 100]|min, 0]|max)|round(1) }}{% endmacro %}
+
+{% macro kpi(label, value, sub=None, kind='neutral', loading=False) -%}
+  <div class="kpi is-{{ kind }}">
+    <div class="kpi-label">{{ label }}</div>
+    {% if loading %}<div class="kpi-value skeleton">000</div>
+    {% else %}<div class="kpi-value">{{ '—' if value is none or value == '' else value }}</div>{% endif %}
+    {% if sub %}<div class="kpi-sub">{{ sub }}</div>{% endif %}
+  </div>
+{%- endmacro %}
+
+{% macro ds_bar(value, max, kind='accent') -%}
+  {%- set p = _pct(value, max)|trim -%}
+  <div class="ds-bar"><span class="ds-bar-fill is-{{ kind }}" style="width:{{ p }}%"></span></div>
+{%- endmacro %}
+
+{% macro ds_ring(value, max, kind='accent', scored=True) -%}
+  {%- set p = _pct(value, max)|trim -%}
+  <div class="ds-ring{% if not scored or value is none %} is-not-scored{% endif %}" style="--p:{{ p }}">
+    <div class="ds-ring-hole">{{ '—' if value is none else value }}</div>
+  </div>
+{%- endmacro %}

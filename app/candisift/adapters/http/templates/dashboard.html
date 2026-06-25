@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block title %}CandiSift — Roles{% endblock %}
+{% block headerright %}
+  {% if llm %}<span class="badge ok">LLM live</span>{% else %}<span class="badge warn">stub mode</span>{% endif %}
+  <span class="mut" style="font-size:12px">queue {{ queue }}</span>
+{% endblock %}
+{% block head %}
+<style>
+  .role-grid { display:grid; gap:10px; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); margin-top:14px; }
+  .rc { display:flex; flex-direction:column; gap:0; padding:16px 18px;
+        background:var(--card); border:1px solid var(--line); border-radius:var(--r);
+        text-decoration:none; color:inherit;
+        transition:border-color .15s var(--ease), box-shadow .15s var(--ease); min-height:114px; }
+  .rc:hover { border-color:var(--acc); box-shadow:0 0 0 3px var(--acc-dim); }
+  .rc-title { font-weight:600; font-size:14px; color:var(--fg); line-height:1.3; }
+  .rc-chips { display:flex; gap:5px; flex-wrap:wrap; margin-top:9px; }
+  .rc-foot { display:flex; justify-content:space-between; align-items:center;
+             font-size:11.5px; margin-top:auto; padding-top:11px; border-top:1px solid var(--line); }
+  .jd-form textarea { min-height:170px; }
+</style>
+{% endblock %}
+{% block content %}
+<div class="pagehead">
+  <div>
+    <h1>Roles</h1>
+    <p>Create a role from a job description, then screen candidates against it.</p>
+  </div>
+</div>
+
+<div class="card jd-form" style="margin-bottom:16px">
+  <h1>New role</h1>
+  <p class="mut" style="margin:0 0 14px;font-size:12.5px">Paste the full JD — must-haves, preferred skills, seniority level. More detail = better keyword extraction and stronger evaluator personas.</p>
+  <form method="post" action="/jobs">
+    <label>Job description</label>
+    <textarea name="jd_text" required
+      placeholder="Senior Backend Engineer&#10;&#10;Requirements:&#10;• 5+ years Python / FastAPI&#10;• Kubernetes, PostgreSQL, Redis&#10;• Experience with microservices at scale&#10;• AWS or GCP, CI/CD pipelines&#10;…"></textarea>
+    <div class="row" style="margin-top:14px">
+      <div>
+        <label>Persona model <span class="mut" style="font-weight:400">(per-candidate, keep cheap)</span></label>
+        <select name="persona_model">
+          {% for m in models %}<option value="{{ m.id }}">{{ m.label }}</option>{% endfor %}
+        </select>
+      </div>
+      <div>
+        <label>Synthesis model <span class="mut" style="font-weight:400">(final verdict, use strong)</span></label>
+        <select name="synth_model">
+          {% for m in models %}<option value="{{ m.id }}"{% if m.id=='auto' %} selected{% endif %}>{{ m.label }}</option>{% endfor %}
+        </select>
+      </div>
+    </div>
+    <div class="metarow" style="margin-top:16px">
+      <button type="submit" data-loading="Creating role…">Create role →</button>
+      <span class="mut" style="font-size:12px">Extracts must-haves · designs evaluator personas · ~15s</span>
+    </div>
+  </form>
+</div>
+
+<div class="card">
+  <div style="display:flex;align-items:baseline;justify-content:space-between">
+    <h1 style="margin:0">Roles <span class="mut" style="font-weight:400;font-size:13px">({{ jobs|length }})</span></h1>
+    {% if jobs %}<a href="/dashboard" class="mut" style="font-size:12px">View analytics →</a>{% endif %}
+  </div>
+  {% if jobs %}
+  <div class="role-grid">
+    {% for j in jobs %}
+    <a href="/jobs/{{ j.id }}" class="rc">
+      <div class="rc-title">{{ j.title or 'Untitled role' }}</div>
+      <div class="rc-chips">
+        {% for s in j.spec.must_have_skills[:4] %}
+        <span class="chip">{{ s }}</span>
+        {% endfor %}
+        {% if j.spec.must_have_skills|length > 4 %}
+        <span class="chip" style="color:var(--mut)">+{{ j.spec.must_have_skills|length - 4 }}</span>
+        {% endif %}
+      </div>
+      <div class="rc-foot">
+        <span class="mut">{{ j.created_at.strftime('%b %d, %Y') }}</span>
+        <span style="color:var(--acc2);font-weight:500">Open →</span>
+      </div>
+    </a>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="empty">
+    <div class="empty-icon">📋</div>
+    <h3>No roles yet</h3>
+    <p>Paste a job description above to create your first screening role.</p>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

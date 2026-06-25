@@ -1,0 +1,200 @@
+{% extends "base.html" %}
+{% block title %}{{ job.title }}{% endblock %}
+{# auto-poll ONLY in ?watch=1 mode — full-page refresh would otherwise wipe the
+   upload form's file selection. Pure HTML, no JS (strict CSP blocks inline scripts). #}
+{% block head %}{% if watch and progress and (progress.running + progress.pending) > 0 %}<meta http-equiv="refresh" content="4">{% endif %}{% endblock %}
+{% block headerright %}queue {% for k, v in queue.items() %}{{ v }} {{ k }} {% endfor %}{% endblock %}
+{% block content %}
+<div class="pagehead">
+  <div>
+    <h1>{{ job.title }}</h1>
+    <p>models: {{ job.persona_model }} (persona) / {{ job.synth_model }} (synth)
+       · must-have: {% for s in job.spec.must_have_skills %}<code>{{ s }}</code> {% endfor %}
+       {% if job.spec.min_years %}· min {{ job.spec.min_years }}y{% endif %}</p>
+  </div>
+  <div style="display:flex;gap:8px">
+    <a href="/jobs/{{ job.id }}/optimize" class="btn secondary">Optimize resume →</a>
+    <a href="/jobs/{{ job.id }}/cover-letter" class="btn secondary">Cover letter →</a>
+  </div>
+</div>
+
+<div class="card">
+  <h1>Results <span class="mut">({{ results|length }})</span></h1>
+  {% if results %}
+  <table>
+    <tr><th>#</th><th>Candidate</th><th>Stage</th><th>Fit</th><th>Recommendation</th><th>Semantic</th><th>Screened</th><th>Decision</th><th></th></tr>
+    {% for r in results %}
+    <tr>
+      <td class="mut">{{ loop.index }}</td>
+      <td><a href="/results/{{ r.id }}"><strong>{{ cand_names.get(r.candidate_id, r.candidate_id[:8]) }}</strong></a></td>
+      <td>{% if r.passed_hard_filters %}<span class="pill done">screened</span>{% else %}<span class="pill reject">hard-filtered</span>{% endif %}</td>
+      <td>{% if r.synthesis %}{% set fit = r.synthesis.overall_fit %}
+        <strong class="num">{{ fit }}</strong>
+        <span class="track" style="width:54px;display:inline-block;vertical-align:middle;margin-left:6px"><span class="fill" style="width:{{ fit }}%;background:{{ 'var(--ok)' if fit>=70 else 'var(--warn)' if fit>=40 else 'var(--bad)' }}"></span></span>
+        {% else %}<span class="mut">—</span>{% endif %}</td>
+      <td>{% if r.synthesis %}<span class="pill {{ r.synthesis.recommendation.value }}">{{ r.synthesis.recommendation.value }}</span>{% if r.requires_human_review %} <span class="pill" style="background:var(--warn);color:#1a1a1a" title="{{ r.review_reasons|join('; ') }}">⚑ review</span>{% endif %}{% else %}<span class="mut">{{ r.filter_reasons|join('; ') }}</span>{% endif %}</td>
+      <td class="mut num">{{ '%.0f'|format(r.semantic_score*100) }}%</td>
+      <td class="mut num">{{ r.created_at.strftime('%b %d %H:%M') }}</td>
+      <td><span class="pill {{ r.decision.value }}">{{ r.decision.value }}</span></td>
+      <td class="right"><a href="/results/{{ r.id }}">breakdown →</a></td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <div class="empty">
+    <div class="empty-icon">📤</div>
+    <h3>No results yet</h3>
+    <p>Upload resumes below, confirm the cost estimate, then refresh — the background worker screens them automatically.</p>
+  </div>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h1>Upload resumes</h1>
+  <form method="post" action="/jobs/{{ job.id }}/upload" enctype="multipart/form-data">
+    <label class="dropzone">
+      <span class="dz-icon">↑</span>
+      <span class="dz-title">Drag &amp; drop resumes, or click to browse</span>
+      <span class="dz-sub">PDF · DOCX · TXT · MD · scanned PNG/JPG/TIFF (auto-OCR) — select many at once</span>
+      <input type="file" name="files" multiple required
+             accept=".pdf,.docx,.txt,.md,.png,.jpg,.jpeg,.tif,.tiff,.bmp,.webp">
+    </label>
+    <div class="file-list" data-file-list></div>
+    <div class="metarow" style="margin-top:14px">
+      <button type="submit" data-loading="Estimating…">Estimate cost →</button>
+      <span class="mut">You'll see an estimated cost before anything runs.</span>
+    </div>
+  </form>
+</div>
+
+{% if job.personas %}
+{% set ps = job.personas %}
+<div class="card">
+  <h1>Evaluator personas <span class="mut" style="font-weight:400;font-size:13px">{{ ps.domain }}{% if ps.seniority %} · {{ ps.seniority }}{% endif %}</span></h1>
+  <p class="mut" style="margin:0 0 14px;font-size:12.5px">Generated from this JD — each agent screens from a different expert lens.</p>
+  <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px">
+    {% for role in ['tech', 'risk', 'hr', 'synth'] %}{% set ap = ps[role] if ps[role] else None %}
+    {% if ap %}
+    <div style="background:var(--bg2);border:1px solid var(--line2);border-radius:var(--r-sm);padding:12px 14px">
+      <div style="font-weight:600;font-size:13px;margin-bottom:4px">{{ ap.title }}</div>
+      <div class="mut" style="font-size:11.5px;line-height:1.55">{{ ap.instructions[0] if ap.instructions else '' }}</div>
+    </div>
+    {% endif %}
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+{% if progress %}
+{% set inflight = progress.running + progress.pending %}
+<div class="card">
+  <h1>Screening progress</h1>
+  <p>
+    <span class="pill running">{{ progress.running }} running</span>
+    <span class="pill pending">{{ progress.pending }} queued</span>
+    {% if progress.staged %}<span class="pill staged">{{ progress.staged }} awaiting cost confirm</span>{% endif %}
+    <span class="pill done">{{ progress.done }} done</span>
+    {% if progress.failed %}<span class="pill failed">{{ progress.failed }} failed</span>{% endif %}
+  </p>
+  {% if inflight %}
+  {% if watch %}
+  <p class="mut">Live — auto-refreshing every 4s. <a href="/jobs/{{ job.id }}">⏸ stop (to upload more)</a></p>
+  {% else %}
+  <p class="mut">{{ progress.running }} in progress, {{ progress.pending }} queued.
+     <a href="/jobs/{{ job.id }}?watch=1">▶ watch live</a> · or just reload when you want an update.</p>
+  {% endif %}
+  {% elif progress.failed %}
+  <p class="mut">Some tasks failed (no retry left):</p>
+  <ul>{% for e in progress.errors %}<li class="mut"><code>{{ e }}</code></li>{% endfor %}</ul>
+  {% elif progress.staged %}
+  <p class="mut">{{ progress.staged }} resume(s) uploaded — confirm the cost estimate to start screening.</p>
+  {% elif progress.done %}
+  <p class="mut">All screening complete — {{ progress.done }} task(s) processed.</p>
+  {% else %}
+  <p class="mut">No screening yet — upload resumes below.</p>
+  {% endif %}
+</div>
+{% endif %}
+
+{% if events %}
+<div class="card">
+  <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:14px">
+    <h1 style="margin:0">Audit trail <span class="mut" style="font-weight:400;font-size:12px">{{ events|length }} events</span></h1>
+    <span class="mut" style="font-size:12px">newest first · persisted</span>
+  </div>
+  <style>
+    .tl { display:flex; flex-direction:column; gap:0; }
+    .tl-row { display:grid; grid-template-columns:32px 1fr auto; gap:0 12px; align-items:start; position:relative; }
+    .tl-row:not(:last-child) .tl-line { position:absolute; left:15px; top:24px; bottom:-4px; width:1px; background:var(--line); z-index:0; }
+    .tl-dot { width:10px; height:10px; border-radius:50%; margin:7px auto 0; flex-shrink:0; position:relative; z-index:1; }
+    .tl-dot.cat-ok    { background:var(--ok); box-shadow:0 0 5px rgba(76,183,130,.4); }
+    .tl-dot.cat-info  { background:var(--info); box-shadow:0 0 5px rgba(78,167,252,.4); }
+    .tl-dot.cat-warn  { background:var(--warn); box-shadow:0 0 5px rgba(242,201,76,.4); }
+    .tl-dot.cat-bad   { background:var(--bad); box-shadow:0 0 5px rgba(235,87,87,.4); }
+    .tl-dot.cat-acc   { background:var(--acc); box-shadow:0 0 5px rgba(94,106,210,.4); }
+    .tl-dot.cat-mut   { background:var(--mut); }
+    .tl-body { padding:4px 0 14px; }
+    .tl-name { font-size:13px; font-weight:500; line-height:1.4; }
+    .tl-meta { font-size:11.5px; color:var(--mut); margin-top:3px; display:flex; flex-wrap:wrap; gap:4px 10px; }
+    .tl-kv   { display:inline-flex; gap:3px; }
+    .tl-kv .k { color:var(--mut); }
+    .tl-kv .v { color:var(--fg2); font-family:var(--mono); }
+    .tl-ts   { font-size:11px; color:var(--mut); white-space:nowrap; padding-top:6px; font-variant-numeric:tabular-nums; }
+  </style>
+  <div class="tl">
+  {% for e in events %}
+  {% set cat = e.event.split('.')[0] %}
+  {% if cat in ('guardrail',) %}{% set dot = 'cat-bad' %}
+  {% elif cat in ('decision',) %}{% set dot = 'cat-acc' %}
+  {% elif cat in ('screen',) %}{% set dot = 'cat-ok' %}
+  {% elif cat in ('optimize','cover_letter') %}{% set dot = 'cat-info' %}
+  {% elif cat in ('task',) %}{% set dot = 'cat-warn' %}
+  {% else %}{% set dot = 'cat-mut' %}{% endif %}
+  {% set label_map = {
+    'job.created':                    'Job created',
+    'batch.enqueued':                 'Resumes uploaded',
+    'batch.confirmed':                'Screening confirmed',
+    'candidate.ingested':             'Resume ingested',
+    'candidate.cache_hit':            'Content cache hit',
+    'candidate.dedup_hit':            'Exact duplicate skipped',
+    'candidate.near_duplicate':       'Near-duplicate flagged',
+    'screen.cache_hit':               'Screening result cached',
+    'screen.rejected_hard_filter':    'Rejected by hard filters',
+    'screen.checkpoint':              'Screening checkpoint',
+    'screen.resumed':                 'Screening resumed from checkpoint',
+    'screen.coverage_audit':          'Coverage audit completed',
+    'guardrail.injection_flag':       'Prompt injection detected',
+    'guardrail.persona_injection_blocked': 'Persona injection blocked',
+    'guardrail.bias_proxy_flag':      'Bias proxy signal flagged',
+    'guardrail.verdict_review':       'Verdict flagged for human review',
+    'decision.set':                   'Human decision recorded',
+    'optimize.completed':             'Resume optimised',
+    'cover_letter.generated':         'Cover letter generated',
+    'task.requeued':                  'Task manually requeued',
+  } %}
+  <div class="tl-row">
+    <div>
+      <div class="tl-dot {{ dot }}"></div>
+      <div class="tl-line"></div>
+    </div>
+    <div class="tl-body">
+      <div class="tl-name">{{ label_map.get(e.event, e.event) }}</div>
+      {% set skip = ('job_id','result_id','candidate_id') %}
+      {% set items = e.data.items()|list %}
+      {% if items %}
+      <div class="tl-meta">
+        {% for k, v in items if k not in skip %}
+        <span class="tl-kv"><span class="k">{{ k }}</span><span class="v">{{ v }}</span></span>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </div>
+    <div class="tl-ts">{{ e.ts.strftime('%b %d %H:%M:%S') }}</div>
+  </div>
+  {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+<p><a href="/">← all roles</a></p>
+{% endblock %}

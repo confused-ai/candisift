@@ -1,0 +1,1 @@
+"""GitHub profile enrichment adapter."""
