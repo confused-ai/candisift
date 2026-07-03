@@ -84,7 +84,13 @@ class Worker:
                 self._queue.reclaim_expired()
                 last_reclaim = now
 
-            task = self._queue.claim_next(self._lease)
+            try:
+                task = self._queue.claim_next(self._lease)
+            except Exception:  # noqa: BLE001 — a transient DB error (e.g. lock) must
+                # not kill the thread permanently; back off and poll again.
+                log.exception("claim_next failed; retrying after idle sleep")
+                self._stop.wait(self._idle)
+                continue
             if task is None:
                 self._stop.wait(self._idle)
                 continue

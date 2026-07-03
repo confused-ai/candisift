@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Optional
 
-from sqlalchemy import JSON, Column, Index
+from sqlalchemy import JSON, Column, Index, event
 from sqlalchemy.engine import Engine
 from sqlmodel import Field, SQLModel, create_engine
 
@@ -160,7 +160,23 @@ def make_engine(db_url: str) -> Engine:
         # plain pysqlite: threads (worker + web) share one file; WAL + busy_timeout
         # reduce "database is locked" errors.
         connect_args = {"check_same_thread": False, "timeout": 30}
-    return create_engine(db_url, connect_args=connect_args, **engine_kwargs)
+    engine = create_engine(db_url, connect_args=connect_args, **engine_kwargs)
+    if engine.url.get_backend_name() == "sqlite":
+        # busy_timeout is PER-CONNECTION and resets on every new pooled connection.
+        # Setting it once in init_db only covered one connection; the rest defaulted
+        # to 0 => a concurrent write threw immediately ("database is locked") instead
+        # of waiting. libSQL raises that as a bare ValueError, which killed the worker
+        # thread. Set it on every connect. (pysqlite's timeout= arg already does this,
+        # but the listener is harmless there and covers libSQL, which has no such arg.)
+        @event.listens_for(engine, "connect")
+        def _set_busy_timeout(dbapi_conn, _rec):  # noqa: ANN001
+            try:
+                cur = dbapi_conn.cursor()
+                cur.execute("PRAGMA busy_timeout=30000")
+                cur.close()
+            except Exception:  # pragma: no cover - backend-dependent (remote Turso)
+                pass
+    return engine
 
 
 def init_db(engine: Engine) -> None:
