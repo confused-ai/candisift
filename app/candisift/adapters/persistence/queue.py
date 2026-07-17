@@ -78,6 +78,18 @@ class SqliteTaskQueue:
                 s.rollback()        # same id already enqueued -> idempotent no-op
                 if not is_unique_violation(e):
                     raise           # a real error, not the expected dup-key collision
+                # ...unless the existing task FAILED: a deterministic-id re-enqueue is
+                # the user retrying (e.g. re-uploading the same resume). Leaving the
+                # dead row in place would silently block that work forever.
+                row = s.get(TaskRow, tid)
+                if row is not None and row.status == TaskStatus.failed.value:
+                    row.status = status.value
+                    row.attempts = 0
+                    row.last_error = ""
+                    row.available_at = None
+                    row.updated_at = now
+                    s.add(row)
+                    s.commit()
         return tid
 
     def release(self, task_ids: list[str]) -> int:

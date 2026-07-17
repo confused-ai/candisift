@@ -107,6 +107,35 @@ def _agent(name: str, model_id: str, schema, instructions: list[str], tools=None
                  use_json_mode=True)
 
 
+def _structured(content, schema):
+    """Recover the schema instance when Agno's JSON-mode parse hands back the raw
+    model text instead. Seen live: the model wraps its JSON in a ```json fence,
+    Agno's parse misses, .content is a str, and downstream code crashes on
+    attribute access ('str' object has no attribute 'rationale'/'work_entries').
+    Parse it ourselves; raise a clear error when there is no valid JSON at all."""
+    if isinstance(content, schema):
+        return content
+    if isinstance(content, dict):
+        return schema.model_validate(content)
+    if isinstance(content, str):
+        text = content.strip()
+        if text.startswith("```"):  # ```json ... ``` (or bare ```) fence
+            text = text.split("\n", 1)[1] if "\n" in text else ""
+            text = text.rsplit("```", 1)[0]
+        start, end = text.find("{"), text.rfind("}")
+        if start != -1 and end > start:
+            try:
+                return schema.model_validate_json(text[start:end + 1])
+            except Exception as e:
+                raise ValueError(
+                    f"{schema.__name__}: model output is not valid schema JSON: {e}"
+                ) from e
+    raise ValueError(
+        f"{schema.__name__}: LLM returned unparseable {type(content).__name__} "
+        f"instead of structured output: {str(content)[:200]!r}"
+    )
+
+
 def _json(model) -> str:
     """Compact, sparse JSON for prompts — no indentation whitespace and drop
     fields still at their default (empty/0/[]). Cuts input tokens ~20-40% on the
@@ -148,7 +177,7 @@ class AgnoProfileExtractor:
         ])
 
     def extract(self, resume_text: str) -> CandidateProfile:
-        return self._agent.run(fence("RESUME", resume_text)).content
+        return _structured(self._agent.run(fence("RESUME", resume_text)).content, CandidateProfile)
 
 
 class AgnoJobSpecExtractor:
@@ -168,7 +197,7 @@ class AgnoJobSpecExtractor:
         ])
 
     def extract(self, jd_text: str) -> JDSpec:
-        return self._agent.run(fence("JOB_DESCRIPTION", jd_text)).content
+        return _structured(self._agent.run(fence("JOB_DESCRIPTION", jd_text)).content, JDSpec)
 
 
 class AgnoTechnicalEvaluator:
@@ -200,7 +229,7 @@ class AgnoTechnicalEvaluator:
         prompt = (f"JOB SPEC:\n{_json(jd)}\n\n"
                   + (f"{note}\n\n" if note else "")
                   + f"CANDIDATE:\n{_json(profile)}")
-        return self._agent.run(_with_persona(persona, prompt)).content
+        return _structured(self._agent.run(_with_persona(persona, prompt)).content, TechEval)
 
 
 class AgnoRiskEvaluator:
@@ -220,7 +249,7 @@ class AgnoRiskEvaluator:
 
     def evaluate(self, profile: CandidateProfile, persona: str = "") -> RiskEval:
         prompt = f"CANDIDATE:\n{_json(profile)}"
-        return self._agent.run(_with_persona(persona, prompt)).content
+        return _structured(self._agent.run(_with_persona(persona, prompt)).content, RiskEval)
 
 
 class AgnoHREvaluator:
@@ -244,7 +273,7 @@ class AgnoHREvaluator:
     def evaluate(self, profile: CandidateProfile, jd: JDSpec, persona: str = "") -> HREval:
         prompt = (f"JOB SPEC:\n{_json(jd)}\n\n"
                   f"CANDIDATE:\n{_json(profile)}")
-        return self._agent.run(_with_persona(persona, prompt)).content
+        return _structured(self._agent.run(_with_persona(persona, prompt)).content, HREval)
 
 
 class AgnoSynthesizer:
@@ -272,7 +301,7 @@ class AgnoSynthesizer:
                   f"TECHNICAL EVAL:\n{_json(tech)}\n\n"
                   f"RISK EVAL:\n{_json(risk)}"
                   + (f"\n\nHR / PEOPLE EVAL:\n{_json(hr)}" if hr else ""))
-        return self._agent.run(_with_persona(persona, prompt)).content
+        return _structured(self._agent.run(_with_persona(persona, prompt)).content, Synthesis)
 
 
 class AgnoCoverageAuditor:
@@ -311,7 +340,7 @@ class AgnoCoverageAuditor:
             + (f"HR / PEOPLE EVAL:\n{_json(hr)}\n\n" if hr else "")
             + f"SYNTHESIS (final verdict):\n{_json(synthesis)}"
         )
-        return self._agent.run(prompt).content
+        return _structured(self._agent.run(prompt).content, CoverageAudit)
 
 
 class _CoverLetterOut(BaseModel):
@@ -381,13 +410,14 @@ class AgnoResumeOptimizer:
         )
         result = self._agent.run(prompt)
         content = result.content
-        if isinstance(content, OptimizerLLMOut):
-            return content
-        # parse miss: returning an empty result here makes the caller fall back to the
-        # ORIGINAL resume while still reporting "optimized" — log so it isn't silent.
-        log.warning("resume optimizer: off-schema model output (%s); returning empty result",
-                    type(content).__name__)
-        return OptimizerLLMOut()
+        try:
+            return _structured(content, OptimizerLLMOut)
+        except ValueError:
+            # parse miss: returning an empty result here makes the caller fall back to
+            # the ORIGINAL resume while still reporting "optimized" — log so it isn't silent.
+            log.warning("resume optimizer: off-schema model output (%s); returning empty result",
+                        type(content).__name__)
+            return OptimizerLLMOut()
 
 
 class AgnoGitHubSelector:

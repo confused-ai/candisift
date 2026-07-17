@@ -72,6 +72,15 @@ _BIAS_PROXIES = [
 _BIAS_RE = [re.compile(p, re.I) for p in _BIAS_PROXIES]
 
 
+# A bare pronoun is the one proxy here that ordinary prose produces on its own: the
+# evaluators screen a PII-stripped profile, so "his experience" is almost always the
+# synthesizer writing English, not a gender inference. It stays on the list (a resume
+# can still leak gender for a model to pick up) but is graded soft, because letting a
+# stray pronoun silently downgrade a verdict is the tripwire auto-acting — the exact
+# thing this module promises not to do.
+_SOFT_PROXY_TERMS = {"he", "she", "his", "her", "him"}
+
+
 def scan_bias_proxies(text: str) -> list[str]:
     """Distinct protected-class proxy phrases found in evaluator-authored text.
     A hit flags the verdict for human review — it is never an automatic action;
@@ -82,6 +91,13 @@ def scan_bias_proxies(text: str) -> list[str]:
         if m and (t := m.group(0).lower()) not in hits:
             hits.append(t)
     return hits
+
+
+def bias_hits_are_soft(hits: list[str]) -> bool:
+    """True when every hit is a bare pronoun — prose drift rather than a named
+    protected class. Such a verdict is still held for a human to read; it just isn't
+    auto-downgraded on the strength of the word "his"."""
+    return bool(hits) and all(h in _SOFT_PROXY_TERMS for h in hits)
 
 
 def fence(label: str, content: str) -> str:

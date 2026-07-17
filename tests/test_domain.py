@@ -18,11 +18,39 @@ def _strong() -> CandidateProfile:
 
 
 def test_hard_filter_pass_and_reject():
-    ok, reasons = hard_filter(_strong(), JD)
+    ok, reasons, _ = hard_filter(_strong(), JD)
     assert ok and not reasons
     weak = CandidateProfile(work_authorization="requires sponsorship", total_years=2)
-    ok, reasons = hard_filter(weak, JD)
+    ok, reasons, _ = hard_filter(weak, JD)
     assert not ok and len(reasons) >= 2  # auth + years
+
+
+ONSITE = JDSpec(title="Backend", min_years=0, locations=["Hyderabad", "Bangalore"], remote_ok=False)
+
+
+def test_hard_filter_unknown_location_passes_with_flag():
+    """Resumes routinely omit a city — unknown location must not auto-reject an
+    on-site candidate; it passes with an advisory flag instead."""
+    ok, reasons, flags = hard_filter(CandidateProfile(total_years=3), ONSITE)
+    assert ok and not reasons
+    assert any("location not stated" in f for f in flags)
+
+
+def test_hard_filter_city_alias_matches():
+    ok, reasons, flags = hard_filter(CandidateProfile(location="Bengaluru, India"), ONSITE)
+    assert ok and not reasons and not flags
+
+
+def test_hard_filter_conflicting_location_still_rejects():
+    ok, reasons, _ = hard_filter(CandidateProfile(location="Pune"), ONSITE)
+    assert not ok and any("location" in r for r in reasons)
+
+
+def test_hard_filter_relocation_intent_flags_not_rejects():
+    prof = CandidateProfile(location="Pune", summary="Backend dev, willing to relocate to Hyderabad")
+    ok, reasons, flags = hard_filter(prof, ONSITE)
+    assert ok and not reasons
+    assert any("relocate" in f for f in flags)
 
 
 def test_dedup_key_stable_and_distinct():

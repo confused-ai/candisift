@@ -135,11 +135,14 @@ class AgnoPersonaDesigner:
 
     def design(self, jd_text: str, spec: JDSpec) -> RolePersonas:
         try:
+            from app.candisift.adapters.llm.agno_personas import _structured
             # bounded so a hung provider call can't wedge create_job — the designer
             # is built standalone (not behind ResilientLLMProvider).
             with ThreadPoolExecutor(max_workers=1) as ex:
                 personas = ex.submit(
-                    lambda: self._build_agent().run(fence("JOB_DESCRIPTION", jd_text)).content
+                    lambda: _structured(
+                        self._build_agent().run(fence("JOB_DESCRIPTION", jd_text)).content,
+                        RolePersonas)
                 ).result(timeout=self._timeout_s)
             if isinstance(personas, RolePersonas) and any(
                 p and p.preamble() for p in (personas.tech, personas.risk, personas.synth, personas.hr)

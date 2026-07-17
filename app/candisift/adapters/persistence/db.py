@@ -33,6 +33,11 @@ class JobRow(SQLModel, table=True):
     raw_text: str = ""
     spec_json: dict = Field(default_factory=dict, sa_column=Column(JSON))
     personas_json: Optional[dict] = Field(default=None, sa_column=Column(JSON))
+    # per-job model choice. Losing these on reload silently re-screened (and
+    # cost-estimated) every job on the env-default models instead of the ones
+    # the recruiter picked. "" (migrated legacy rows) resolves like "auto".
+    persona_model: str = "auto"
+    synth_model: str = "auto"
     created_at: datetime
 
 
@@ -43,6 +48,7 @@ class ResultRow(SQLModel, table=True):
     candidate_id: str = Field(index=True)
     passed_hard_filters: bool = True
     filter_reasons: list = Field(default_factory=list, sa_column=Column(JSON))
+    hard_filter_overridden: bool = False   # human overruled the gate; survives re-screens
     semantic_score: float = 0.0
     tech_json: Optional[dict] = Field(default=None, sa_column=Column(JSON))
     risk_json: Optional[dict] = Field(default=None, sa_column=Column(JSON))
@@ -84,6 +90,9 @@ class TaskRow(SQLModel, table=True):
 
 # composite index for the durable queue's "oldest pending" claim scan
 Index("ix_task_status_created", TaskRow.status, TaskRow.created_at)
+# the job page's activity log filters job_id + ORDER BY ts DESC on every render, and
+# the audit table is append-only — the single-column indexes stop paying once it grows.
+Index("ix_audit_job_ts", AuditRow.job_id, AuditRow.ts)
 
 
 class TraceRow(SQLModel, table=True):
@@ -139,9 +148,13 @@ def _is_libsql(db_url: str) -> bool:
 def is_unique_violation(exc: BaseException) -> bool:
     """True if `exc` is a UNIQUE/primary-key violation, across drivers. pysqlite
     surfaces it as SQLAlchemy IntegrityError; the libSQL (Turso) driver raises a raw
-    ValueError('UNIQUE constraint failed: ...'). Both must be treated the same for
-    idempotent inserts, or a duplicate enqueue/ingest would crash under libSQL."""
-    return "unique constraint failed" in str(exc).lower()
+    ValueError('UNIQUE constraint failed: ...'); Postgres says 'duplicate key value
+    violates unique constraint' (SQLSTATE 23505). All must be treated the same for
+    idempotent inserts, or a duplicate enqueue/ingest would crash on that backend."""
+    if getattr(getattr(exc, "orig", None), "pgcode", "") == "23505":
+        return True
+    msg = str(exc).lower()
+    return "unique constraint failed" in msg or "duplicate key value" in msg
 
 
 def make_engine(db_url: str) -> Engine:
@@ -160,6 +173,12 @@ def make_engine(db_url: str) -> Engine:
         # plain pysqlite: threads (worker + web) share one file; WAL + busy_timeout
         # reduce "database is locked" errors.
         connect_args = {"check_same_thread": False, "timeout": 30}
+    else:
+        # server DB (Postgres/MySQL): validate pooled connections before handing
+        # them out (survives DB restarts / idle timeouts) and recycle stale ones.
+        # Pool sized for one web process + the background worker thread.
+        engine_kwargs.update(pool_pre_ping=True, pool_size=5, max_overflow=10,
+                             pool_recycle=1800)
     engine = create_engine(db_url, connect_args=connect_args, **engine_kwargs)
     if engine.url.get_backend_name() == "sqlite":
         # busy_timeout is PER-CONNECTION and resets on every new pooled connection.
@@ -193,7 +212,9 @@ def init_db(engine: Engine) -> None:
                     conn.exec_driver_sql(pragma)
                 except Exception:  # pragma: no cover - backend-dependent
                     pass
-        _ensure_unique_indexes(engine)
+    # partial unique indexes are valid on Postgres too — the dedup/cache
+    # invariants must hold as DB constraints on every backend, not just SQLite.
+    _ensure_unique_indexes(engine)
 
 
 def _ensure_unique_indexes(engine: Engine) -> None:
@@ -239,16 +260,24 @@ def _migrate_sqlite(engine: Engine) -> None:
                 if col.name in have:
                     continue
                 coltype = col.type.compile(dialect=engine.dialect)
-                # ADD COLUMN can't be NOT NULL without a default -> give scalars a
-                # sane default so existing rows stay valid for the Pydantic mappers.
+                # ADD COLUMN can't be NOT NULL without a default -> give scalars a sane
+                # default so existing rows stay valid for the Pydantic mappers. Derive it
+                # from the compiled SQL type: SQLModel's str columns (AutoString/VARCHAR)
+                # raise on .python_type, which previously left them with NO default -> the
+                # column filled NULL and every legacy-row read 500'd in Pydantic.
                 default = ""
                 try:
                     pt = col.type.python_type
-                    default = (" DEFAULT ''" if pt is str else
-                               " DEFAULT 0" if pt in (int, bool) else
-                               " DEFAULT 0.0" if pt is float else "")
-                except Exception:
-                    default = ""                 # JSON/datetime -> nullable
+                    is_str = pt is str
+                    is_int = pt in (int, bool)
+                    is_float = pt is float
+                except Exception:                # AutoString and friends land here
+                    t = coltype.upper()
+                    is_str = any(k in t for k in ("CHAR", "TEXT", "CLOB", "STRING"))
+                    is_int = is_float = False
+                default = (" DEFAULT ''" if is_str else
+                           " DEFAULT 0" if is_int else
+                           " DEFAULT 0.0" if is_float else "")   # JSON/datetime -> nullable
                 conn.exec_driver_sql(
                     f'ALTER TABLE "{table.name}" ADD COLUMN "{col.name}" {coltype}{default}')
                 log.warning("migrated: added %s.%s", table.name, col.name)

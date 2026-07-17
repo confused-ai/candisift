@@ -24,7 +24,16 @@ pip install -r requirements.txt
 cp .env.example .env                 # edit auth + (optional) ANTHROPIC_API_KEY
 python3 -m pytest -q                 # 18 tests, all offline
 uvicorn main:app --reload            # http://localhost:8000  (login: recruiter / change-me)
-# or: docker build -t candisift . && docker run -p 8000:8000 candisift
+```
+
+Docker (see [Deploying](#deploying) — the image runs as `CANDISIFT_ENV=prod` and
+**refuses to boot on default credentials**):
+
+```bash
+docker build -t candisift .
+docker run -p 8000:8000 -v candisift-data:/data \
+  -e CANDISIFT_BASIC_AUTH_USER=you -e CANDISIFT_BASIC_AUTH_PASS='a-real-password' \
+  -e CANDISIFT_HSTS=true candisift          # add -e CANDISIFT_ENV=dev for a local kick-the-tyres run
 ```
 
 **Flow:** create a role (pick models or leave *Auto*) → upload resumes → **see the cost
@@ -145,6 +154,44 @@ POST /api/results/{id}/decision {decision}
 GET  /api/jobs/{id}/bias-audit
 GET  /api/queue · GET /api/tasks?status=failed · POST /api/tasks/{id}/requeue
 ```
+
+## Deploying
+
+The image sets `CANDISIFT_ENV=prod`, so `config.validate_runtime()` **refuses to boot**
+on a default username/password, a `*` CORS origin, or HSTS off. That is the point — a
+container that silently served `recruiter` / `change-me` on the public internet would be
+worse than a failed deploy. Required at `docker run`:
+
+| env | why |
+|---|---|
+| `CANDISIFT_BASIC_AUTH_USER` / `_PASS` | must both be non-default |
+| `CANDISIFT_HSTS=true` | you are behind HTTPS (a TLS-terminating proxy) |
+| `CANDISIFT_CORS_ORIGINS` | only if a browser on another origin calls the API; never `*` |
+| `ANTHROPIC_API_KEY` | optional — omit to run the offline stub |
+| `CANDISIFT_TRUSTED_PROXY_COUNT` | set to your hop count behind a proxy/LB, else all users share one rate-limit bucket |
+
+**State lives on a volume.** The DB defaults to `/data/candisift.db` in the image and
+`/data` is declared as a `VOLUME`; mount a named volume or host dir there
+(`-v candisift-data:/data`). Without it the SQLite file sits in the container's writable
+layer and every candidate, result, and audit row dies with the container.
+
+**Backups (WAL-safe).** Never `cp` a live `.db` — recent commits may still be in the
+`-wal` file and you will restore a torn database. Take a consistent snapshot instead:
+
+```bash
+# hot backup via SQLite's backup API (safe while the app is writing)
+docker exec candisift python -c "import sqlite3; src=sqlite3.connect('/data/candisift.db'); \
+dst=sqlite3.connect('/data/backup.db'); src.backup(dst); dst.close(); src.close()"
+docker cp candisift:/data/backup.db ./candisift-$(date +%F).db
+
+# or, with the sqlite3 CLI on the host against the volume:
+sqlite3 /var/lib/docker/volumes/candisift-data/_data/candisift.db ".backup '/backups/candisift.db'"
+```
+
+For continuous/point-in-time recovery run [litestream](https://litestream.io) as a
+sidecar against `/data/candisift.db` — it streams the WAL to S3 and restores to any
+point in time. On Turso (`CANDISIFT_DB_URL=sqlite+libsql://…turso.io`) backups are the
+platform's job and none of the above applies.
 
 ## Config
 

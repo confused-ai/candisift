@@ -195,6 +195,23 @@ def requeue_task(task_id: str, c: Container = Depends(get_container)):
     return {"task_id": task_id, "requeued": True}
 
 
+@router.post("/results/{result_id}/override-filter")
+def override_hard_filter(result_id: str, c: Container = Depends(get_container)):
+    """Recruiter override of a deterministic auto-reject: screen the candidate anyway.
+    The hard filter is a cost gate, not a verdict — a human must be able to overrule it,
+    and the bypass is audited (screen.hard_filter_overridden) with the ignored reasons
+    kept on the result."""
+    r = c.results.get(result_id)
+    if r is None:
+        raise HTTPException(404, f"result {result_id}")
+    if r.passed_hard_filters:
+        raise HTTPException(400, "result was not rejected by the hard filter")
+    out = c.service.screen(r.candidate_id, r.job_id, override_hard_filter=True)
+    return {"result_id": out.id, "overridden": True,
+            "overridden_reasons": r.filter_reasons,
+            "recommendation": out.synthesis.recommendation.value if out.synthesis else None}
+
+
 @router.post("/results/{result_id}/decision")
 def set_decision(result_id: str, body: DecisionIn, c: Container = Depends(get_container)):
     try:
@@ -217,14 +234,53 @@ def bias_audit(job_id: str, c: Container = Depends(get_container)):
     total = len(results)
     passed = sum(1 for r in results if r.passed_hard_filters)
     rec = Counter(r.synthesis.recommendation.value for r in results if r.synthesis)
+    # Per-gate rejection counts, one vote per CANDIDATE (a candidate rejected by two
+    # gates counts once for each, but not twice for the same gate) — so the tally
+    # answers "how many candidates did gate X drop", the shape an adverse-impact
+    # question takes. One aggregate pass-rate couldn't surface which gate is rejecting.
+    gates: Counter = Counter()
+    for r in results:
+        if not r.passed_hard_filters:
+            gates.update({_gate_of(reason) for reason in r.filter_reasons})
+    held = sum(1 for r in results if r.requires_human_review)
+    capped = sum(1 for r in results if r.synthesis and r.review_reasons)
     return {
         "job_id": job_id, "total": total,
         "hard_filter_pass_rate": round(passed / total, 3),
+        "rejected_by_gate": dict(gates),
+        "stage_rates": {
+            "hard_filter_rejected": round((total - passed) / total, 3),
+            "held_for_human_review": round(held / total, 3),
+            "verdict_guard_capped": round(capped / total, 3),
+        },
         "recommendations": dict(rec),
         "shortlist_rate": round(rec.get("shortlist", 0) / total, 3),
         "note": "screened on skills/experience only; PII stripped pre-evaluation. "
                 "Attach consented cohort labels per candidate for true disparate-impact analysis.",
     }
+
+
+# filter_reasons are human-readable sentences, so bucket them back into the gate that
+# wrote them for the per-gate tally. ponytail: string matching on our own messages —
+# if the reasons ever become structured, key off that instead.
+# Knockout FIRST: its reason embeds arbitrary JD text ("matched JD knockout(s):
+# ['pending work authorization']"), so any later keyword could mis-bucket it — the
+# knockout gate (a key adverse-impact signal) would then never be counted.
+_GATE_PATTERNS = (
+    ("knockout", ("knockout",)),
+    ("work_auth", ("work authorization", "work auth")),
+    ("location", ("location",)),
+    ("experience_years", ("experience <",)),
+    ("certifications", ("required certs",)),
+)
+
+
+def _gate_of(reason: str) -> str:
+    r = reason.lower()
+    for gate, needles in _GATE_PATTERNS:
+        if any(n in r for n in needles):
+            return gate
+    return "other"
 
 
 @router.get("/queue")

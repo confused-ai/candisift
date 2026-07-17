@@ -94,12 +94,19 @@ def build_container(settings: Settings | None = None) -> Container:
         log.warning("ANTHROPIC_API_KEY not set — using deterministic offline stub LLM + template personas")
     llm = TracingLLMProvider(base, tracer)
 
+    # A default model id outside the catalog (e.g. a .env typo) silently prices
+    # every estimate at $0/unknown and fails at call time in real-LLM mode.
+    from app.candisift import pricing
+    for role, m in (("PERSONA", settings.persona_model), ("SYNTH", settings.synth_model)):
+        if not pricing.is_known_model(m):
+            log.warning("CANDISIFT_%s_MODEL=%r is not in the model catalog — cost "
+                        "estimates will show $0/unknown and real LLM calls may fail", role, m)
+
     service = ScreeningService(
         text_extractor=parser, llm=llm, ranker=ranker,
         candidates=candidates, jobs=jobs, results=results, audit=audit, queue=queue,
         default_persona_model=settings.persona_model,
         default_synth_model=settings.synth_model,
-        top_n=settings.top_n,
         tracer=tracer, memory=memory, persona_designer=persona_designer,
         coverage_audit=settings.coverage_audit_enabled,
         hr_eval=settings.hr_eval_enabled,

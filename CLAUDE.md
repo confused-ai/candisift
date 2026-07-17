@@ -14,7 +14,11 @@ python3 -m pytest -q                  # full suite, fully offline (no API key ne
 python3 -m pytest tests/test_domain.py::test_name   # single test
 python3 -m pytest tests/test_hardening.py -q        # regression suite for the 53 hardening fixes
 
-docker build -t candisift . && docker run -p 8000:8000 candisift
+# the image sets CANDISIFT_ENV=prod (refuses default creds, wildcard CORS, HSTS-off).
+# Local demo — override to dev so it boots on plain HTTP:
+docker build -t candisift . && docker run -p 8000:8000 \
+  -e CANDISIFT_ENV=dev -v candisift-data:/data candisift
+# Real deploy (behind TLS) — set creds + HSTS + CORS instead; see README "Deploying".
 ```
 
 No lint config in repo. Tests are the gate — run them after any change. Everything runs offline against the **stub LLM** unless `ANTHROPIC_API_KEY` (or another provider key) is set; tests never hit the network.
@@ -27,6 +31,10 @@ Hexagonal (ports & adapters). **Dependencies point inward only**: `domain/` has 
 ingest → strip PII → hard filter → rank → [survivors] persona agents (tech ‖ risk) → synthesis → persist+audit
         ╰──── deterministic, ~free, no key ────╯              ╰──── LLM, resilient ────╯
 ```
+
+The **hard filter is the only cost gate** — rank scores every survivor but cuts nothing (`semantic_score` is advisory, shown to the recruiter). A real top-N cut needs a batch barrier the per-candidate durable worker doesn't have; the dead `top_n` setting that implied otherwise is gone.
+
+That filter's rule: **reject on conflicting evidence, flag on missing evidence.** Extraction is imperfect and a resume is not a form, so "we couldn't parse it" (no location, unrecognized work-auth phrasing, unestablished years) passes with an advisory flag in `filter_reasons`, while a recognized conflict still rejects for free. Blank work auth is the one fail-closed case. Every auto-reject is overridable by a recruiter (`screen(..., override_hard_filter=True)`, audited) — an automated employment decision a human can't overrule is the thing regulators object to.
 
 Orchestrator: `application/screening_service.py` — knows the funnel order and model-selection policy, nothing about Agno/SQL/HTTP.
 

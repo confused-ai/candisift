@@ -37,6 +37,8 @@ def _to_job(row: JobRow) -> Job:
     return Job(id=row.id, title=row.title, raw_text=row.raw_text,
                spec=JDSpec.model_validate(row.spec_json),
                personas=RolePersonas.model_validate(row.personas_json) if row.personas_json else None,
+               persona_model=getattr(row, "persona_model", "") or "auto",
+               synth_model=getattr(row, "synth_model", "") or "auto",
                created_at=row.created_at)
 
 
@@ -44,6 +46,7 @@ def _to_result(row: ResultRow) -> ScreeningResult:
     return ScreeningResult(
         id=row.id, job_id=row.job_id, candidate_id=row.candidate_id,
         passed_hard_filters=row.passed_hard_filters, filter_reasons=row.filter_reasons,
+        hard_filter_overridden=bool(getattr(row, "hard_filter_overridden", False)),
         semantic_score=row.semantic_score,
         tech=TechEval.model_validate(row.tech_json) if row.tech_json else None,
         risk=RiskEval.model_validate(row.risk_json) if row.risk_json else None,
@@ -123,6 +126,7 @@ class SqlJobRepository:
             s.add(JobRow(id=job.id, title=job.title, raw_text=job.raw_text,
                          spec_json=job.spec.model_dump(mode="json"),
                          personas_json=job.personas.model_dump(mode="json") if job.personas else None,
+                         persona_model=job.persona_model, synth_model=job.synth_model,
                          created_at=job.created_at))
             s.commit()
 
@@ -147,7 +151,9 @@ class SqlResultRepository:
             data = dict(
                 job_id=result.job_id, candidate_id=result.candidate_id,
                 passed_hard_filters=result.passed_hard_filters,
-                filter_reasons=result.filter_reasons, semantic_score=result.semantic_score,
+                filter_reasons=result.filter_reasons,
+                hard_filter_overridden=result.hard_filter_overridden,
+                semantic_score=result.semantic_score,
                 tech_json=result.tech.model_dump(mode="json") if result.tech else None,
                 risk_json=result.risk.model_dump(mode="json") if result.risk else None,
                 hr_json=result.hr.model_dump(mode="json") if result.hr else None,
@@ -183,9 +189,14 @@ class SqlResultRepository:
         return results
 
     def list_all(self, limit: int = 5000) -> list[ScreeningResult]:
-        """Every result across jobs — powers the analytics dashboard funnel/decisions."""
+        """The most recent `limit` results across jobs — powers the analytics dashboard
+        funnel/decisions. Ordered before the cut: an unordered LIMIT hands back a
+        driver-dependent arbitrary subset once the table exceeds it, so the dashboard
+        would quietly report KPIs over whichever rows the backend happened to scan."""
         with Session(self._engine) as s:
-            rows = s.exec(select(ResultRow).limit(limit)).all()
+            rows = s.exec(
+                select(ResultRow).order_by(ResultRow.created_at.desc()).limit(limit)
+            ).all()
         return [_to_result(r) for r in rows]
 
     def set_decision(self, result_id: str, decision: str) -> None:

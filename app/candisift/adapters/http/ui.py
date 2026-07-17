@@ -13,6 +13,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from jinja2 import ChainableUndefined
 
 from app.candisift import pricing
 from app.candisift.domain import ats_readability
@@ -22,7 +23,11 @@ from .security import check_size, validate_uploads
 
 log = logging.getLogger("candisift.ui")
 router = APIRouter()
+# ChainableUndefined: profiles are stored as JSON blobs, so older rows may lack
+# keys newer templates read (e.g. proj.github_details.stars). Default Undefined
+# turns that into a 500; chainable renders it empty/falsy instead.
 _templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+_templates.env.undefined = ChainableUndefined
 
 
 def _render(request: Request, name: str, **ctx) -> HTMLResponse:
@@ -332,6 +337,20 @@ def breakdown(result_id: str, request: Request, c: Container = Depends(get_conta
     readability = ats_readability.score(cand.profile, job.spec) if (cand and job) else None
     trace = c.tracer.latest_run(r.candidate_id, r.job_id)
     return _render(request, "breakdown.html", r=r, cand=cand, job=job, readability=readability, trace=trace)
+
+
+@router.post("/results/{result_id}/override-filter")
+def override_filter(result_id: str, c: Container = Depends(get_container)):
+    """Recruiter overrules a deterministic auto-reject and sends the candidate to the
+    evaluators anyway. The hard filter is a cost gate, not a verdict — a screening tool
+    a human cannot overrule is the thing that gets an ATS in trouble."""
+    r = c.results.get(result_id)
+    if r is None:
+        raise HTTPException(404, f"result {result_id}")
+    if r.passed_hard_filters:
+        raise HTTPException(400, "result was not rejected by the hard filter")
+    c.service.screen(r.candidate_id, r.job_id, override_hard_filter=True)
+    return RedirectResponse(f"/results/{result_id}", status_code=303)
 
 
 @router.post("/results/{result_id}/decision")

@@ -22,7 +22,6 @@ class Settings(BaseSettings):
     db_url: str = "sqlite+libsql:///ats.db"
 
     # funnel
-    top_n: int = 30
     max_attempts: int = 3
     worker_lease_seconds: int = 300
     # parallel worker threads (atomic claim is multi-safe). >1 overlaps the slow
@@ -70,6 +69,13 @@ class Settings(BaseSettings):
     max_files_per_batch: int = 200        # per-upload count cap
     max_request_mb: int = 64              # whole-request body cap
     rate_limit_per_min: int = 120         # per-client request budget
+    # reverse proxies / load balancers in front of this app. 0 = direct exposure:
+    # X-Forwarded-For is ignored entirely (any client can forge it). >0 = exactly the
+    # last N XFF entries were appended by our own trusted hops, so the rate limiter
+    # keys on the Nth-from-the-right instead of collapsing every user behind the
+    # proxy into one shared bucket. Set it to the real hop count — too high and a
+    # forged entry becomes the key.
+    trusted_proxy_count: int = 0
     cors_origins: str = ""                # comma-separated allowlist; empty = same-origin only
     hsts: bool = False                    # enable only behind HTTPS
 

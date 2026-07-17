@@ -10,3 +10,9 @@ import os
 
 for _var in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY"):
     os.environ[_var] = ""
+
+# Pin the model defaults too: an operator's .env (e.g. CANDISIFT_PERSONA_MODEL=all-free)
+# would otherwise leak into Settings() and make cost-estimate assertions
+# non-deterministic. Pre-set wins over load_dotenv(override=False).
+os.environ["CANDISIFT_PERSONA_MODEL"] = "claude-haiku-4-5"
+os.environ["CANDISIFT_SYNTH_MODEL"] = "claude-opus-4-8"

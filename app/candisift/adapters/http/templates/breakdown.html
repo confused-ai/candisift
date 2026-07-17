@@ -106,6 +106,18 @@
   <h1>Hard-filtered out</h1>
   <ul class="siglist bad">{% for reason in r.filter_reasons %}<li class="claim">{{ reason }}</li>{% endfor %}</ul>
   <p class="mut">Rejected by deterministic rules before any LLM cost.</p>
+  <form method="post" action="/results/{{ r.id }}/override-filter" style="margin-top:10px;">
+    <button type="submit">Screen anyway (override)</button>
+    <span class="mut" style="font-size:12px; margin-left:8px;">
+      Disagree with the rule? Send this candidate to the evaluators. Costs one screen; the override is audited.
+    </span>
+  </form>
+</div>
+{% elif r.filter_reasons %}
+<div class="card callout">
+  <h1>Verify at outreach</h1>
+  <ul class="siglist">{% for note in r.filter_reasons %}<li class="claim">{{ note }}</li>{% endfor %}</ul>
+  <p class="mut">Passed screening, but the resume left these unstated — confirm with the candidate rather than assuming.</p>
 </div>
 {% endif %}
 
@@ -301,9 +313,10 @@
           </span>
         </div>
         <p class="mut" style="font-size:12px; margin:4px 0 8px 0; line-height:1.4;">{{ proj.description or 'No description' }}</p>
+        {% set gd = proj.get('github_details') or {} %}
         <div style="display:flex; gap:10px; flex-wrap:wrap; font-size:11px; color:var(--mut);">
-          <span>⭐ {{ proj.github_details.stars or 0 }}</span>
-          <span>🍴 {{ proj.github_details.forks or 0 }}</span>
+          <span>⭐ {{ gd.get('stars', 0) }}</span>
+          <span>🍴 {{ gd.get('forks', 0) }}</span>
           <span>👥 {{ proj.contributor_count or 1 }} contribs</span>
           {% if proj.author_commit_count %}<span>✍️ {{ proj.author_commit_count }} / {{ proj.total_commit_count }} commits</span>{% endif %}
         </div>
@@ -317,10 +330,11 @@
   </div>
   {% endif %}
 
-  {% if p.linkedin_profile and (p.linkedin_profile.positions or p.linkedin_profile.skills) %}
+  {% set li = p.linkedin_profile or {} %}
+  {% if li and (li.get('positions') or li.get('skills')) %}
   <h2>LinkedIn Profile <span class="mut" style="font-size:12px;">(resume-derived)</span></h2>
-  {% if p.linkedin_profile.headline %}<p style="font-weight:600; margin:4px 0 10px 0;">{{ p.linkedin_profile.headline }}</p>{% endif %}
-  {% for pos in p.linkedin_profile.positions %}
+  {% if li.get('headline') %}<p style="font-weight:600; margin:4px 0 10px 0;">{{ li['headline'] }}</p>{% endif %}
+  {% for pos in li.get('positions', []) %}
     <div class="card" style="margin-bottom:10px; background:var(--card2); padding:12px 14px; border:1px solid var(--line2);">
       <div style="display:flex; justify-content:space-between; align-items:center; font-weight:600;">
         <span>{{ pos.title or 'Role' }}{% if pos.company %} · {{ pos.company }}{% endif %}</span>
@@ -333,9 +347,9 @@
       {% endif %}
     </div>
   {% endfor %}
-  {% if p.linkedin_profile.skills %}
+  {% if li.get('skills') %}
     <div style="margin:8px 0 18px 0;">
-      {% for sk in p.linkedin_profile.skills %}<code style="font-size:10px; background:var(--line); padding:1px 4px; border-radius:3px; margin-right:4px;">{{ sk }}</code>{% endfor %}
+      {% for sk in li['skills'] %}<code style="font-size:10px; background:var(--line); padding:1px 4px; border-radius:3px; margin-right:4px;">{{ sk }}</code>{% endfor %}
     </div>
   {% endif %}
   {% endif %}

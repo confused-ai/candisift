@@ -110,6 +110,17 @@ class BodySizeLimitMiddleware:
         await send({"type": "http.response.body", "body": b'{"detail":"request too large"}'})
 
 
+def _strip_port(entry: str) -> str:
+    """"203.0.113.7:41233" -> "203.0.113.7", so one client isn't split across buckets by
+    source port. A bare IPv6 ("2001:db8::1", several colons) is left alone; only a
+    trailing ":port" on an IPv4 or a bracketed [v6]:port is trimmed."""
+    if entry.startswith("["):                       # [2001:db8::1]:443
+        return entry[1:].split("]")[0]
+    if entry.count(":") == 1:                        # ipv4:port
+        return entry.split(":")[0]
+    return entry
+
+
 class RateLimitMiddleware(BaseHTTPMiddleware):
     """In-memory fixed-window limiter. ponytail: per-process; behind multiple
     instances move the window to Redis (interface unchanged). The hit map is pruned
@@ -118,13 +129,36 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
     _MAX_CLIENTS = 50_000
 
-    def __init__(self, app, *, per_minute: int) -> None:
+    def __init__(self, app, *, per_minute: int, trusted_proxy_count: int = 0) -> None:
         super().__init__(app)
         self._per_minute = per_minute
+        self._trusted_proxy_count = max(0, int(trusted_proxy_count))
         self._hits: dict[str, deque] = {}
 
+    def _client_ip(self, request: Request) -> str:
+        """The bucket key. Keying on the socket peer is correct ONLY on direct
+        exposure: behind a proxy/LB the peer is the proxy, so every user collapses
+        into one bucket — one noisy client 429s the whole site, and the limiter stops
+        being the brute-force fence on Basic auth. X-Forwarded-For is client-appendable,
+        so trust it exactly as far as the operator says: with N trusted hops in front,
+        the last N entries were appended by them and the Nth-from-the-right is the
+        address our own edge saw. Everything left of it is attacker-controlled."""
+        n = self._trusted_proxy_count
+        if n:
+            # getlist, not get: a proxy may append its own SEPARATE X-Forwarded-For
+            # header line rather than extending the first, and get() returns only the
+            # first line — so an attacker's forged line would be read as the client while
+            # the real one is ignored. Flatten every line, then index from the right.
+            parts = [p.strip() for line in request.headers.getlist("X-Forwarded-For")
+                     for p in line.split(",") if p.strip()]
+            if len(parts) >= n:
+                return _strip_port(parts[-n])
+            # header absent or shorter than the trusted chain (a request that bypassed
+            # the proxy) -> fall back to the peer, never to a spoofable entry.
+        return request.client.host if request.client else "unknown"
+
     async def dispatch(self, request: Request, call_next):
-        client = request.client.host if request.client else "unknown"
+        client = self._client_ip(request)
         now = time.monotonic()
         # opportunistic GC: drop clients whose window has fully aged out, so idle
         # IPs don't accumulate empty deques forever.

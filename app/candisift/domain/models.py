@@ -273,7 +273,13 @@ class ScreeningResult(BaseModel):
     job_id: str
     candidate_id: str
     passed_hard_filters: bool
+    # reject reasons when passed_hard_filters is False; advisory "verify at outreach"
+    # notes when True (the gate flags what it could not establish rather than rejecting)
     filter_reasons: list[str] = []
+    # a human overruled the hard filter for this candidate. Durable and deliberately
+    # OUTSIDE models_fingerprint: a JD typo fix or a model swap re-screens, and the
+    # human's decision must outlive that rather than being silently re-litigated.
+    hard_filter_overridden: bool = False
     semantic_score: float = 0.0
     tech: TechEval | None = None
     risk: RiskEval | None = None

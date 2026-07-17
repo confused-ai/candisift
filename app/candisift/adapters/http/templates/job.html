@@ -32,7 +32,7 @@
         <strong class="num">{{ fit }}</strong>
         <span class="track" style="width:54px;display:inline-block;vertical-align:middle;margin-left:6px"><span class="fill" style="width:{{ fit }}%;background:{{ 'var(--ok)' if fit>=70 else 'var(--warn)' if fit>=40 else 'var(--bad)' }}"></span></span>
         {% else %}<span class="mut">—</span>{% endif %}</td>
-      <td>{% if r.synthesis %}<span class="pill {{ r.synthesis.recommendation.value }}">{{ r.synthesis.recommendation.value }}</span>{% if r.requires_human_review %} <span class="pill" style="background:var(--warn);color:#1a1a1a" title="{{ r.review_reasons|join('; ') }}">⚑ review</span>{% endif %}{% else %}<span class="mut">{{ r.filter_reasons|join('; ') }}</span>{% endif %}</td>
+      <td>{% if r.synthesis %}<span class="pill {{ r.synthesis.recommendation.value }}">{{ r.synthesis.recommendation.value }}</span>{% if r.requires_human_review %} <span class="pill" style="background:var(--warn);color:#1a1a1a" title="{{ r.review_reasons|join('; ') }}">⚑ review</span>{% endif %}{% elif not r.passed_hard_filters %}<span class="mut">{{ r.filter_reasons|join('; ') }}</span>{% else %}<span class="mut">screening…</span>{% endif %}</td>
       <td class="mut num">{{ '%.0f'|format(r.semantic_score*100) }}%</td>
       <td class="mut num">{{ r.created_at.strftime('%b %d %H:%M') }}</td>
       <td><span class="pill {{ r.decision.value }}">{{ r.decision.value }}</span></td>

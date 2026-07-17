@@ -19,7 +19,8 @@ from concurrent.futures import ThreadPoolExecutor
 from app.candisift.domain import ports
 from app.candisift.domain.duplicate import find_near_duplicate
 from app.candisift.domain.guardrails import (
-    MAX_JD_CHARS, MAX_RESUME_CHARS, injection_score, sanitize_untrusted, scan_bias_proxies,
+    MAX_JD_CHARS, MAX_RESUME_CHARS, bias_hits_are_soft, injection_score, sanitize_untrusted,
+    scan_bias_proxies,
 )
 from app.candisift.domain.models import (
     AgentPersona, Candidate, Job, Recommendation, RolePersonas, ScreeningResult, TaskType,
@@ -82,6 +83,31 @@ def _scrub_personas(personas: RolePersonas | None) -> tuple[RolePersonas | None,
     return scrubbed, False
 
 
+def _verdict_text(tech: TechEval | None, risk: RiskEval | None, hr: HREval | None,
+                  synthesis: Synthesis) -> list[str]:
+    """Every free-text string the evaluators AUTHORED — the surface the bias tripwire
+    scans. A proxy term is just as harmful in a strength claim or an HR concern as in
+    the synthesis rationale, so all of them are in scope.
+
+    Finding.evidence is deliberately NOT: it is a verbatim quote from the candidate's
+    own resume, so scanning it would flag (and, on a hard hit, cap) a candidate for
+    writing "Society of Women Engineers" on their CV — penalising the applicant for
+    their own words is the exact bias this tripwire exists to catch. Fabricated evidence
+    is verdict_guard's grounding check, not this scan's."""
+    claims = lambda fs: [f.claim for f in fs]                    # noqa: E731
+    out: list[str] = [synthesis.rationale]
+    out += claims((*synthesis.strengths, *synthesis.weaknesses))
+    if tech is not None:
+        out.append(tech.summary)
+        out += claims((*tech.matched, *tech.transferable))
+    if risk is not None:
+        out += claims(risk.flags)
+    if hr is not None:
+        out.append(hr.summary)
+        out += claims((*hr.strengths, *hr.concerns))
+    return [s for s in out if s]
+
+
 def _models_fingerprint(persona_model: str, synth_model: str, spec,
                         hr_eval: bool = True, coverage_audit: bool = True) -> str:
     """Identity of the work a screen would do. Same fingerprint => the stored
@@ -109,7 +135,6 @@ class ScreeningService:
         queue: ports.TaskQueue,
         default_persona_model: str,
         default_synth_model: str,
-        top_n: int = 30,
         tracer: ports.Tracer | None = None,
         memory: ports.AgentMemory | None = None,
         persona_designer: ports.PersonaDesigner | None = None,
@@ -126,7 +151,6 @@ class ScreeningService:
         self._queue = queue
         self._default_persona = default_persona_model
         self._default_synth = default_synth_model
-        self._top_n = top_n
         self._tracer = tracer
         self._memory = memory
         self._persona_designer = persona_designer
@@ -265,7 +289,16 @@ class ScreeningService:
 
     # ---- the funnel for one (candidate, job) ------------------------------
 
-    def screen(self, candidate_id: str, job_id: str) -> ScreeningResult:
+    def screen(self, candidate_id: str, job_id: str, *,
+               override_hard_filter: bool = False) -> ScreeningResult:
+        """Run the funnel for one (candidate, job).
+
+        override_hard_filter is the recruiter's manual override of a deterministic
+        auto-reject: it skips the gate, busts the terminal cache entry, and sends the
+        candidate to the evaluators anyway. An automated employment-decision tool that
+        a human cannot overrule is the thing regulators actually object to, so the
+        bypass is audited (screen.hard_filter_overridden) and the reasons it ignored
+        are kept on the result rather than erased."""
         cand = self._candidates.get(candidate_id)
         if cand is None:
             raise NotFoundError(f"candidate {candidate_id}")
@@ -286,9 +319,19 @@ class ScreeningService:
         # evaluators, pick up at synthesis). A spec/model change flips the
         # fingerprint and forces a fresh screen.
         prior = self._results.get(rid)
+        # A past override is a durable fact about this candidate, not a one-shot
+        # instruction: screen() re-derives the gate on every entry (worker retries carry
+        # no flag, and a fingerprint change discards the cache entirely), so without this
+        # the human's decision is silently re-litigated and lost.
+        overridden = bool(override_hard_filter or (prior is not None and prior.hard_filter_overridden))
+
         resume = None
         if prior is not None and prior.models_fingerprint == fingerprint:
             terminal = (not prior.passed_hard_filters) or prior.synthesis is not None
+            # an override exists precisely to redo a screen the cache calls settled:
+            # reusing the stored hard-reject would make the button do nothing.
+            if overridden and not prior.passed_hard_filters:
+                terminal = False
             if terminal:
                 self._audit.record("screen.cache_hit", result_id=rid, candidate_id=candidate_id)
                 if self._tracer:
@@ -301,7 +344,17 @@ class ScreeningService:
             self._tracer.start_run("screen", candidate_id=candidate_id, job_id=job_id)
         try:
             score = self._rank.score(cand.profile, job.spec)
-            passed, reasons = hard_filter(cand.profile, job.spec)
+            passed, reasons, filter_flags = hard_filter(cand.profile, job.spec)
+
+            if not passed and overridden:
+                # keep the ignored reasons visible on the result — the evaluators still
+                # must not see them (they are recruiter context, not evidence).
+                filter_flags = [f"hard filter overridden by recruiter: {r}" for r in reasons] \
+                    + filter_flags
+                self._audit.record("screen.hard_filter_overridden", result_id=rid,
+                                   candidate_id=candidate_id, job_id=job_id,
+                                   overridden_reasons=reasons)
+                passed = True
 
             # stage 3: hard-filtered out -> no LLM spend
             if not passed:
@@ -359,7 +412,8 @@ class ScreeningService:
                 # parallel block is one unit; go per-persona only if one call dominates.
                 self._results.upsert(ScreeningResult(
                     id=rid, job_id=job_id, candidate_id=candidate_id,
-                    passed_hard_filters=True, semantic_score=score,
+                    passed_hard_filters=True, filter_reasons=filter_flags,
+                    hard_filter_overridden=overridden, semantic_score=score,
                     tech=tech, risk=risk, hr=hr, models_fingerprint=fingerprint,
                 ))
                 self._audit.record("screen.checkpoint", result_id=rid,
@@ -371,22 +425,36 @@ class ScreeningService:
             synthesis = self._llm.synthesizer(synth_model).synthesize(
                 job.spec, tech, risk, hr, synth_persona)
 
-            # bias guardrail: scan the verdict's OWN words for protected-class proxies.
+            # bias guardrail: scan the evaluators' OWN words for protected-class proxies.
             # A hit is flagged for human review (audit + on the result), never auto-acted.
-            verdict_text = " ".join([synthesis.rationale] + [f.claim for f in synthesis.weaknesses])
-            bias_flags = scan_bias_proxies(verdict_text)
+            # Every recruiter-visible free-text field an evaluator authored is in scope —
+            # scanning only the rationale left a proxy in a strength claim, an HR concern
+            # or a risk flag to reach the recruiter unflagged.
+            bias_flags = scan_bias_proxies(" ".join(_verdict_text(tech, risk, hr, synthesis)))
+            # a bare-pronoun-only hit is prose drift, not a named protected class
+            soft_bias = bias_hits_are_soft(bias_flags)
             if bias_flags:
                 self._audit.record("guardrail.bias_proxy_flag", result_id=rid,
-                                   candidate_id=candidate_id, terms=bias_flags)
+                                   candidate_id=candidate_id, terms=bias_flags,
+                                   severity="soft" if soft_bias else "hard")
 
             # deterministic output guardrails (verdict_guard): reconcile the model's
             # verdict against the hard facts — cap an over-confident shortlist when a
             # must-have is unmet or a fraud signal is present, and flag claims whose
             # evidence doesn't trace to the profile. Caps/flags only; never upgrades.
-            guard = apply_guards(synthesis, tech, risk, screened, bias_flagged=bool(bias_flags))
+            guard = apply_guards(synthesis, tech, risk, screened,
+                                 bias_flagged=bool(bias_flags) and not soft_bias)
             synthesis.recommendation = guard.recommendation   # persist the capped verdict
             requires_review = guard.requires_human_review
             review_reasons = list(guard.review_reasons)
+            # cap_verdict gates the shortlist→maybe downgrade; requires_review only holds
+            # for a human. Soft (pronoun-only) bias holds but must not cap — capping on
+            # the word "his" is the tripwire auto-acting.
+            cap_verdict = guard.requires_human_review
+            if bias_flags and soft_bias:
+                requires_review = True
+                review_reasons.append(
+                    "pronoun in evaluator text (prose drift) — flagged for review, verdict not capped")
             if requires_review:
                 self._audit.record("guardrail.verdict_review", result_id=rid,
                                    candidate_id=candidate_id, reasons=review_reasons)
@@ -404,28 +472,31 @@ class ScreeningService:
                         job.spec, screened, tech, risk, hr, synthesis)
                 except Exception:
                     log.exception("coverage audit failed; routing to human review")
-                    requires_review = True
+                    requires_review = cap_verdict = True
                     review_reasons.append("QA auditor error — verdict not independently verified")
                 else:
                     if not coverage.safe_to_surface_to_recruiter:
-                        requires_review = True
+                        requires_review = cap_verdict = True
                         review_reasons.append("QA auditor flagged the verdict unsafe to surface")
                     self._audit.record("screen.coverage_audit", result_id=rid,
                                        candidate_id=candidate_id, overall=coverage.overall,
                                        safe=coverage.safe_to_surface_to_recruiter,
                                        failures=[f.check for f in coverage.failures])
 
-            # Any human-review hold (bias, ungrounded claim, or QA-auditor-unsafe) also
-            # caps an over-confident shortlist down to "maybe", so the recommendation a
-            # recruiter scans — and the analytics shortlist tally — never shows a clean
-            # green "shortlist" for a verdict we are holding back. (Knockout/fraud were
-            # already capped inside apply_guards.)
-            if requires_review and synthesis.recommendation is Recommendation.shortlist:
+            # A substantive human-review hold (named bias proxy, ungrounded claim, or
+            # QA-auditor-unsafe) also caps an over-confident shortlist down to "maybe", so
+            # the recommendation a recruiter scans — and the analytics shortlist tally —
+            # never shows a clean green "shortlist" for a verdict we are holding back.
+            # (Knockout/fraud were already capped inside apply_guards.) A soft
+            # pronoun-only flag deliberately does not reach here: it holds for a read
+            # without rewriting the verdict.
+            if cap_verdict and synthesis.recommendation is Recommendation.shortlist:
                 synthesis.recommendation = Recommendation.maybe
 
             result = ScreeningResult(
                 id=rid, job_id=job_id, candidate_id=candidate_id,
-                passed_hard_filters=True, semantic_score=score,
+                passed_hard_filters=True, filter_reasons=filter_flags,
+                hard_filter_overridden=overridden, semantic_score=score,
                 tech=tech, risk=risk, hr=hr, synthesis=synthesis,
                 bias_flags=bias_flags,
                 requires_human_review=requires_review,
