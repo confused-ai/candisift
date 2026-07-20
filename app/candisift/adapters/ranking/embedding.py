@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import threading
 import time
 
@@ -77,7 +78,13 @@ class EmbeddingRanker:
             def _load() -> None:
                 try:
                     from sentence_transformers import SentenceTransformer
-                    result["enc"] = SentenceTransformer(self._model_name)
+                    # device is pinned, NOT auto-selected: sentence-transformers picks
+                    # MPS on Apple Silicon, and a torch MPS context built in this side
+                    # thread then used from a uvicorn worker thread SIGBUSes on the first
+                    # forward pass. MiniLM-L6 is ~2ms/text on CPU — MPS buys nothing at
+                    # this size. Override with CANDISIFT_EMBED_DEVICE=mps|cuda.
+                    device = os.environ.get("CANDISIFT_EMBED_DEVICE", "cpu")
+                    result["enc"] = SentenceTransformer(self._model_name, device=device)
                 except Exception as e:    # not installed / offline fetch failed
                     result["err"] = e
 

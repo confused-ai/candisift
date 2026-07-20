@@ -6,8 +6,14 @@ Implements the TextExtractor port. Strategy per type:
   text (scanned image PDF), render that page and OCR it with Tesseract. Pages
   that already have a text layer are kept verbatim — OCR runs only where needed.
 - **Image** (png/jpg/tiff/…): OCR directly with Tesseract.
-- **DOCX**: read paragraphs (python-docx). Embedded images are not OCR'd.
+- **DOCX**: read paragraphs and table cells (python-docx); embedded images are
+  OCR'd when OCR is on.
+- **Legacy .doc** (Word 97-2003, incl. one renamed to .docx): converted first
+  via `textutil` (stock on macOS) then `soffice`, and read as text/DOCX.
 - **Everything else**: decode as UTF-8 (lossy).
+
+Routing is by magic bytes first, extension only as a fallback — mislabeled
+uploads (a .doc or PDF named .docx) are common and used to yield no text at all.
 
 Every optional dependency (pdfplumber, python-docx, pytesseract, pdf2image,
 Pillow) and the external `tesseract`/`poppler` binaries are imported/called
@@ -38,6 +44,10 @@ _OCR_MIN_CHARS = 24
 # that expands to gigapixels and exhausts memory. Pillow raises on exceeding it.
 _MAX_IMAGE_PIXELS = 40_000_000
 
+# OLE2 / Compound File Binary header — legacy Word 97-2003 (.doc), and what a
+# .doc renamed to .docx actually contains.
+_OLE2_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+
 
 class FileTextExtractor:
     """Filename-dispatched extractor with an optional Tesseract OCR fallback.
@@ -59,8 +69,11 @@ class FileTextExtractor:
         ocr_dpi: int = 300,
         max_ocr_pages: int = 50,
         ocr_timeout_s: int = 30,
+        doc_convert_timeout_s: int = 60,
     ) -> None:
         self.ocr = ocr
+        # LibreOffice cold-starts slowly on the first .doc of a process lifetime
+        self.doc_convert_timeout_s = max(5, int(doc_convert_timeout_s))
         self.ocr_lang = ocr_lang
         self.ocr_dpi = max(72, int(ocr_dpi))
         self.max_ocr_pages = max(1, int(max_ocr_pages))
@@ -73,6 +86,16 @@ class FileTextExtractor:
         if not content:
             return ""
         ext = os.path.splitext((filename or "").lower())[1]
+        # Content wins over extension. A legacy .doc (or a PDF) renamed to .docx
+        # is routine from recruiters/applicants, and used to die as BadZipFile
+        # with zero text. Magic bytes are unambiguous; the extension is only a
+        # hint for the formats we can't sniff (.txt/.md/.csv).
+        if content.startswith(b"%PDF"):
+            return self._pdf(content)
+        if content.startswith(b"PK\x03\x04"):
+            return self._docx(content)
+        if content.startswith(_OLE2_MAGIC):
+            return self._legacy_doc(content)
         if ext == ".pdf":
             return self._pdf(content)
         if ext == ".docx":
@@ -250,6 +273,66 @@ class FileTextExtractor:
             text = self._docx_image_ocr(document, text)
         return text.strip()
 
+    # ---- legacy .doc (Word 97-2003) --------------------------------------
+    def _legacy_doc(self, content: bytes) -> str:
+        """Read an OLE2 .doc by shelling out to a converter.
+
+        ponytail: converts rather than parsing the binary Word format — same
+        optional-external-binary deal as tesseract/poppler. `textutil` is stock
+        on macOS; `soffice` covers Linux/Docker. Tries both because a Homebrew
+        `soffice` shim can exist while LibreOffice itself is gone.
+        """
+        import shutil
+        import subprocess
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            src = os.path.join(tmp, "in.doc")
+            with open(src, "wb") as fh:
+                fh.write(content)
+
+            textutil = shutil.which("textutil")          # macOS, always present
+            if textutil:
+                out = self._run_convert(
+                    subprocess, [textutil, "-convert", "txt", "-stdout", src], tmp)
+                # textutil exits 0 on a file it can't parse, echoing the raw
+                # bytes back. NUL bytes mean it did that — don't let binary
+                # sludge reach the screening prompts; try the next converter.
+                if out is not None and b"\x00" not in out:
+                    return out.decode("utf-8", errors="ignore").strip()
+
+            soffice = shutil.which("soffice") or shutil.which("libreoffice")
+            if soffice:
+                if self._run_convert(
+                    subprocess,
+                    [soffice, "--headless", "--convert-to", "docx", "--outdir", tmp, src],
+                    tmp,
+                ) is not None:
+                    converted = os.path.join(tmp, "in.docx")
+                    if os.path.exists(converted):
+                        with open(converted, "rb") as fh:
+                            return self._docx(fh.read())
+
+        log.warning(
+            "legacy Word .doc (possibly mislabeled .docx) and no working converter — "
+            "install libreoffice, or ask for the resume as .docx/PDF"
+        )
+        return ""
+
+    def _run_convert(self, subprocess, cmd: list[str], tmp: str) -> bytes | None:
+        """Run a converter. Returns stdout, or None if it failed/timed out."""
+        try:
+            done = subprocess.run(
+                cmd, capture_output=True, check=True, timeout=self.doc_convert_timeout_s,
+                # a stray user profile lock makes soffice hang; give it its own HOME
+                env={**os.environ, "HOME": tmp},
+            )
+        except Exception as e:
+            log.warning("%s conversion failed (%s)",
+                        os.path.basename(cmd[0]), e.__class__.__name__)
+            return None
+        return done.stdout
+
     def _docx_image_ocr(self, document, text: str) -> str:
         """OCR images embedded in a DOCX (some resumes are a single image in a
         Word wrapper). Appends recovered text; logos/icons just yield little.
@@ -290,6 +373,13 @@ if __name__ == "__main__":  # ponytail: smallest real check of the OCR path
     assert x.extract(b"hello world", "a.txt") == "hello world"
     # empty / unknown bytes never raise
     assert x.extract(b"", "a.pdf") == ""
+
+    # content beats extension: a legacy .doc renamed to .docx must NOT hit the
+    # zip reader (that was the BadZipFile -> "no readable text" failure), and a
+    # truncated OLE2 header must still degrade to "" rather than raise.
+    assert x.extract(_OLE2_MAGIC + b"\x00" * 64, "resume.docx") == ""
+    # a PDF renamed to .docx routes to the PDF reader
+    assert x.extract(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n", "resume.docx") == ""
 
     # OCR round-trip: render text to a PNG, then read it back via Tesseract.
     try:
